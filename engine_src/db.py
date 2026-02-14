@@ -136,6 +136,16 @@ def get_clip_state(conn: sqlite3.Connection, clip_id: str) -> dict | None:
     }
 
 
+def get_clip_id_by_path(conn: sqlite3.Connection, clip_path: str) -> str | None:
+    row = conn.execute(
+        "SELECT clip_id FROM clips WHERE clip_path=? LIMIT 1",
+        (clip_path,),
+    ).fetchone()
+    if not row:
+        return None
+    return str(row[0])
+
+
 def upsert_clip_metadata(
     conn: sqlite3.Connection,
     clip_id: str,

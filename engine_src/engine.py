@@ -77,7 +77,9 @@ def process_clip(args: argparse.Namespace) -> int:
 
     conn = db.open_db(db_path)
     db.ensure_schema(conn)
-    clip_id = db.compute_clip_id(clip_path, file_size, file_mtime_utc)
+    clip_path_text = str(clip_path.resolve())
+    existing_clip_id = db.get_clip_id_by_path(conn, clip_path_text)
+    clip_id = existing_clip_id if existing_clip_id else db.compute_clip_id(clip_path, file_size, file_mtime_utc)
     state = db.get_clip_state(conn, clip_id)
     if state and state["processed"] == 1 and state["processed_fps"] == fps and not args.force:
         emit(
@@ -111,7 +113,7 @@ def process_clip(args: argparse.Namespace) -> int:
     db.upsert_clip_metadata(
         conn,
         clip_id=clip_id,
-        clip_path=str(clip_path),
+        clip_path=clip_path_text,
         file_size=meta["file_size"],
         file_mtime_utc=meta["file_mtime_utc"],
         duration_sec=meta["duration_sec"],

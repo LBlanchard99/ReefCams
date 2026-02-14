@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ReefCams.Processor</AssemblyName>
+    <RootNamespace>ReefCams.Processor</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ReefCams.Core\ReefCams.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\engine_dist\engine\**\*" CopyToOutputDirectory="PreserveNewest" LinkBase="engine" Condition="Exists('..\..\engine_dist\engine')" />
+  </ItemGroup>
+</Project>

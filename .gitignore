@@ -212,3 +212,35 @@ __marimo__/
 # Build folders
 engine_build
 engine_dist
+
+# .NET / Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.rsuser
+*.sln.docstates
+[Bb]in/
+[Oo]bj/
+TestResults/
+artifacts/
+*.nupkg
+*.snupkg
+
+# Coverage / profiling
+*.coverage
+*.coveragexml
+*.trx
+
+# Local dotnet / NuGet caches used in this repo
+.dotnet_home/
+.nuget_packages/
+
+# Local temporary/debug files
+*.tmp
+*.temp
+*.bak
+*.orig
+build_restore_diag.log
+pytest-cache-files-*/
+processor_ui_state.json

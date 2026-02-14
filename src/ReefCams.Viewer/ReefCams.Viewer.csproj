@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ReefCams.Viewer</AssemblyName>
+    <RootNamespace>ReefCams.Viewer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ReefCams.Core\ReefCams.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\engine_dist\engine\ffprobe.exe" CopyToOutputDirectory="PreserveNewest" Link="ffprobe.exe" Condition="Exists('..\..\engine_dist\engine\ffprobe.exe')" />
+  </ItemGroup>
+</Project>

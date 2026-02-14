@@ -1,0 +1,252 @@
+<Window x:Class="ReefCams.Viewer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:ReefCams.Viewer"
+        xmlns:core="clr-namespace:ReefCams.Core;assembly=ReefCams.Core"
+        mc:Ignorable="d"
+        Title="ReefCams Viewer"
+        Width="1500"
+        Height="900"
+        MinWidth="1200"
+        MinHeight="760"
+        PreviewKeyDown="Window_PreviewKeyDown">
+    <Window.Resources>
+        <HierarchicalDataTemplate DataType="{x:Type core:HierarchyNode}" ItemsSource="{Binding Children}">
+            <TextBlock Text="{Binding Label}" />
+        </HierarchicalDataTemplate>
+        <Style x:Key="GapExpandButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#2F5D8F" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="BorderBrush" Value="#9CC2EB" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#3F6EA2" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="{x:Type DataGridRow}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsGapRow}" Value="True">
+                    <Setter Property="Background" Value="#2B2D39" />
+                    <Setter Property="Foreground" Value="#CFD9EA" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="#1A2230" CornerRadius="8" Padding="10">
+            <StackPanel>
+                <DockPanel LastChildFill="True">
+                    <Button DockPanel.Dock="Left" Content="Choose Project Dir" Click="ChooseProjectDir_Click" />
+                    <Button DockPanel.Dock="Left" Content="Add Clip Root" Click="AddClipRoot_Click" />
+                    <Button DockPanel.Dock="Left" Content="Index Roots" Click="IndexRoots_Click" />
+                    <Button x:Name="DefineBoundaryButton" DockPanel.Dock="Left" Content="Edit Reef Boundry" Click="ToggleBoundaryMode_Click" />
+                    <Button x:Name="BoundaryRemoveLastPointButton"
+                            DockPanel.Dock="Left"
+                            Content="Undo Last Stroke"
+                            Click="BoundaryRemoveLastPoint_Click"
+                            Visibility="Collapsed" />
+                    <Button x:Name="BoundaryClearButton"
+                            DockPanel.Dock="Left"
+                            Content="Clear Boundry"
+                            Click="BoundaryClear_Click"
+                            Visibility="Collapsed" />
+                    <Button x:Name="BoundarySaveButton"
+                            DockPanel.Dock="Left"
+                            Content="Save Boundry"
+                            Click="BoundarySave_Click"
+                            Visibility="Collapsed" />
+                    <TextBlock Text="{Binding ProjectDirDisplay}" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="#9BB0C8" />
+                </DockPanel>
+                <DockPanel Margin="0,8,0,0" LastChildFill="True">
+                    <ComboBox Width="220"
+                              ItemsSource="{Binding RankOptions}"
+                              SelectedItem="{Binding SelectedMinRank, Mode=TwoWay}"
+                              SelectionChanged="MinRank_SelectionChanged"
+                              Foreground="#0F1726"
+                              Background="#F1F5FB">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" Foreground="#0F1726" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                        <ComboBox.Resources>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="#0F1726" />
+                            </Style>
+                        </ComboBox.Resources>
+                    </ComboBox>
+                    <CheckBox Margin="12,0,0,0"
+                              VerticalAlignment="Center"
+                              IsChecked="{Binding HideBelowRank, Mode=TwoWay}"
+                              Checked="HideBelowRank_Changed"
+                              Unchecked="HideBelowRank_Changed"
+                              Content="Hide clips below selected rank" />
+                    <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" HorizontalAlignment="Right" Foreground="#9BB0C8" />
+                </DockPanel>
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="1" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="420" MinWidth="280" />
+                <ColumnDefinition Width="6" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Background="#1A2230" CornerRadius="8" Padding="8">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Expander x:Name="ProjectTreeExpander"
+                              Grid.Row="0"
+                              IsExpanded="True"
+                              ExpandDirection="Down"
+                              Background="#24354D"
+                              BorderBrush="#7AA6D6"
+                              BorderThickness="1"
+                              Margin="0,0,0,8">
+                        <Expander.Header>
+                            <TextBlock Text="Project Tree" FontWeight="SemiBold" />
+                        </Expander.Header>
+                        <TreeView ItemsSource="{Binding HierarchyNodes}"
+                                  MaxHeight="260"
+                                  ItemContainerStyle="{StaticResource {x:Type TreeViewItem}}"
+                                  SelectedItemChanged="HierarchyTree_SelectedItemChanged" />
+                    </Expander>
+
+                    <DockPanel Grid.Row="1">
+                        <DockPanel DockPanel.Dock="Top" LastChildFill="True" Margin="0,0,0,6">
+                            <TextBlock DockPanel.Dock="Left" Text="Timeline" FontWeight="SemiBold" Margin="0,0,10,0" />
+                            <TextBlock Text="{Binding TimelineScopeText}" Foreground="#9BB0C8" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <DataGrid x:Name="TimelineDataGrid"
+                                  ItemsSource="{Binding TimelineRows}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  IsReadOnly="True"
+                                  SelectionMode="Single"
+                                  SelectionUnit="FullRow"
+                                  EnableRowVirtualization="True"
+                                  EnableColumnVirtualization="True"
+                                  SelectionChanged="TimelineDataGrid_SelectionChanged">
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="Expand" Width="72">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="Expand"
+                                                    Tag="{Binding GapGroupId}"
+                                                    Click="ExpandGap_Click">
+                                                <Button.Style>
+                                                    <Style TargetType="Button" BasedOn="{StaticResource GapExpandButtonStyle}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsGapRow}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="Clip / Gap Summary" Binding="{Binding ClipName}" Width="*" />
+                                <DataGridTextColumn Header="Timestamp (UTC)" Binding="{Binding CreatedText}" Width="180" />
+                                <DataGridTextColumn Header="Rank" Binding="{Binding RankLabel}" Width="88" />
+                                <DataGridTextColumn Header="Max Conf" Binding="{Binding MaxConfText}" Width="80" />
+                                <DataGridCheckBoxColumn Header="Processed" Binding="{Binding Processed}" Width="78" />
+                                <DataGridCheckBoxColumn Header="Completed" Binding="{Binding Completed}" Width="78" />
+                                <DataGridTextColumn Header="Delta t" Binding="{Binding DeltaText}" Width="120" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </Grid>
+            </Border>
+
+            <GridSplitter Grid.Column="1"
+                          Width="6"
+                          ResizeDirection="Columns"
+                          ResizeBehavior="PreviousAndNext"
+                          HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch"
+                          Background="#5A80AE" />
+
+            <Border Grid.Column="2" Margin="10,0,0,0" Background="#1A2230" CornerRadius="8" Padding="8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0">
+                    <MediaElement x:Name="PlayerElement"
+                                  LoadedBehavior="Manual"
+                                  UnloadedBehavior="Manual"
+                                  Stretch="Uniform"
+                                  MediaOpened="PlayerElement_MediaOpened"
+                                  MediaEnded="PlayerElement_MediaEnded" />
+                    <Canvas x:Name="OverlayCanvas"
+                            Background="#00000000"
+                            MouseLeftButtonDown="OverlayCanvas_MouseLeftButtonDown"
+                            MouseLeftButtonUp="OverlayCanvas_MouseLeftButtonUp"
+                            MouseMove="OverlayCanvas_MouseMove"
+                            MouseRightButtonDown="OverlayCanvas_MouseRightButtonDown" />
+                </Grid>
+
+                <Slider Grid.Row="1"
+                        x:Name="SeekSlider"
+                        Minimum="0"
+                        ValueChanged="SeekSlider_ValueChanged"
+                        PreviewMouseLeftButtonDown="SeekSlider_MouseDown"
+                        PreviewMouseLeftButtonUp="SeekSlider_MouseUp"
+                        Margin="0,6,0,4" />
+
+                <WrapPanel Grid.Row="2" VerticalAlignment="Center">
+                    <Button x:Name="PlayPauseButton" MinWidth="74" Padding="10,2" Content="Play" Click="PlayPause_Click" />
+                    <Button Content="Jump Max Frame" Click="JumpMaxFrame_Click" />
+                    <Button x:Name="MarkClipCompletedButton" Content="Mark Clip Completed" Click="MarkClipCompleted_Click" />
+                    <CheckBox x:Name="ShowDetectionsCheck"
+                              Content="Detections"
+                              IsChecked="True"
+                              Checked="OverlaySettings_Changed"
+                              Unchecked="OverlaySettings_Changed"
+                              Margin="12,2,0,0" />
+                    <CheckBox x:Name="ShowBoundaryCheck"
+                              Content="Boundary"
+                              IsChecked="True"
+                              Checked="OverlaySettings_Changed"
+                              Unchecked="OverlaySettings_Changed"
+                              Margin="12,2,0,0" />
+                    <TextBlock Text="Conf >=" Margin="16,0,4,0" VerticalAlignment="Center" />
+                    <Slider x:Name="ConfSlider"
+                            Minimum="0" Maximum="1"
+                            Width="120"
+                            ValueChanged="OverlaySettings_Changed"
+                            Value="0.1" />
+                    <TextBlock Text="Padding px" Margin="16,0,4,0" VerticalAlignment="Center" />
+                    <Slider x:Name="PaddingSlider"
+                            Minimum="0"
+                            Maximum="120"
+                            Width="120"
+                            ValueChanged="OverlaySettings_Changed"
+                            Value="10" />
+                </WrapPanel>
+            </Grid>
+        </Border>
+        </Grid>
+    </Grid>
+</Window>
