@@ -21,6 +21,8 @@ If you run `engine.exe` with no arguments (e.g., double-click), it runs:
 - `benchmark_frame`: per-frame timings (seek/read/infer)
 - `benchmark_result`: summary timings and provider_used
 - `start` / `frame` / `done` / `error` for processing
+  - `frame` includes `max_conf_frame_label` (`animal`/`person`/`vehicle` when present)
+  - `done` includes clip-level `max_conf_label` and `max_conf_cls_id`
 
 ## Guardrails
 - Never writes to source clip folders.
@@ -48,10 +50,13 @@ From `engine_src/`:
 ```powershell
 .\build_engine.ps1
 ```
+`ffprobe.exe` must exist at `engine_src\ffprobe.exe` (or `engine_src\tools\ffprobe.exe`, or repo root) so it can be bundled into `engine_dist\engine\ffprobe.exe`.
+
 This produces:
 ```
 engine_dist/engine/
   engine.exe
+  ffprobe.exe
   models/
   benchmark/
   README_ENGINE.md

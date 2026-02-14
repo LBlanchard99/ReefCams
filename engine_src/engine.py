@@ -87,6 +87,8 @@ def process_clip(args: argparse.Namespace) -> int:
                 "frames": 0,
                 "max_conf": float(state["max_conf"] or 0.0),
                 "max_t": float(state["max_conf_time_sec"] or 0.0),
+                "max_conf_cls_id": state.get("max_conf_cls_id"),
+                "max_conf_label": state.get("max_conf_label"),
                 "total_ms": (time.perf_counter() - t0) * 1000.0,
                 "provider_used": "",
                 "skipped": True,
@@ -137,6 +139,8 @@ def process_clip(args: argparse.Namespace) -> int:
     detections_rows = []
     max_conf = 0.0
     max_t = 0.0
+    max_conf_cls_id: int | None = None
+    max_conf_label: str | None = None
     frame_count = 0
 
     for t_actual, frame in video.sample_frames_with_times(clip_path, fps):
@@ -145,18 +149,22 @@ def process_clip(args: argparse.Namespace) -> int:
             conf_thresh=models.DEFAULT_CONF_THRESH,
             min_area_frac=models.DEFAULT_MIN_AREA_FRAC,
         )
-        max_conf_frame = max((d[1] for d in dets), default=0.0)
+        max_det = max(dets, key=lambda d: d[2], default=None)
+        max_conf_frame = float(max_det[2]) if max_det is not None else 0.0
         frames_rows.append((clip_id, float(t_actual), float(max_conf_frame)))
-        if max_conf_frame >= max_conf:
+        if max_det is not None and max_conf_frame >= max_conf:
             max_conf = float(max_conf_frame)
             max_t = float(t_actual)
+            max_conf_cls_id = int(max_det[0])
+            max_conf_label = str(max_det[1])
         for det in dets:
-            cls_id, conf, x, y, w, h, area_frac = det
+            cls_id, cls_label, conf, x, y, w, h, area_frac = det
             detections_rows.append(
                 (
                     clip_id,
                     float(t_actual),
                     int(cls_id),
+                    str(cls_label),
                     float(conf),
                     float(x),
                     float(y),
@@ -172,6 +180,8 @@ def process_clip(args: argparse.Namespace) -> int:
                 "clip": str(clip_path),
                 "t": float(t_actual),
                 "max_conf_frame": float(max_conf_frame),
+                "max_conf_frame_cls_id": (int(max_det[0]) if max_det is not None else None),
+                "max_conf_frame_label": (str(max_det[1]) if max_det is not None else None),
                 "det_count": len(dets),
             }
         )
@@ -184,6 +194,8 @@ def process_clip(args: argparse.Namespace) -> int:
         detections=detections_rows,
         max_conf=max_conf,
         max_conf_time_sec=max_t,
+        max_conf_cls_id=max_conf_cls_id,
+        max_conf_label=max_conf_label,
     )
     conn.close()
 
@@ -194,6 +206,8 @@ def process_clip(args: argparse.Namespace) -> int:
             "frames": frame_count,
             "max_conf": max_conf,
             "max_t": max_t,
+            "max_conf_cls_id": max_conf_cls_id,
+            "max_conf_label": max_conf_label,
             "total_ms": (time.perf_counter() - t0) * 1000.0,
             "provider_used": provider_used,
             "meta_ms": float(bar_ms),

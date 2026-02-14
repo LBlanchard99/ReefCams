@@ -6,6 +6,17 @@ import numpy as np
 import onnxruntime as ort
 
 
+MD_CLASS_ID_TO_LABEL = {
+    0: "animal",
+    1: "person",
+    2: "vehicle",
+}
+
+
+def class_id_to_label(cls_id: int) -> str:
+    return MD_CLASS_ID_TO_LABEL.get(int(cls_id), f"class_{int(cls_id)}")
+
+
 def letterbox(image: np.ndarray, new_shape: int, color=(114, 114, 114)) -> Tuple[np.ndarray, float, Tuple[int, int]]:
     h, w = image.shape[:2]
     r = min(new_shape / h, new_shape / w)
@@ -86,7 +97,7 @@ class MegaDetector:
         conf_thresh: float,
         min_area_frac: float,
         max_iou: float = 0.5,
-    ) -> List[Tuple[int, float, float, float, float, float, float]]:
+    ) -> List[Tuple[int, str, float, float, float, float, float, float]]:
         img, r, (dw, dh) = letterbox(image_bgr, self.img_size)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         tensor = rgb.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
@@ -117,7 +128,7 @@ class MegaDetector:
         xyxy /= r
 
         h, w = image_bgr.shape[:2]
-        filtered: List[Tuple[int, float, Tuple[float, float, float, float], float]] = []
+        filtered: List[Tuple[int, str, float, Tuple[float, float, float, float], float]] = []
         for cls, conf, (x1, y1, x2, y2) in zip(class_ids, confs, xyxy):
             x1 = float(max(0.0, min(w - 1.0, x1)))
             x2 = float(max(0.0, min(w - 1.0, x2)))
@@ -129,21 +140,23 @@ class MegaDetector:
             if area < min_area_frac * h * w:
                 continue
             area_frac = area / (h * w + 1e-9)
-            filtered.append((int(cls), float(conf), (x1, y1, x2, y2), float(area_frac)))
+            cls_id = int(cls)
+            cls_label = class_id_to_label(cls_id)
+            filtered.append((cls_id, cls_label, float(conf), (x1, y1, x2, y2), float(area_frac)))
 
         if not filtered:
             return []
 
-        boxes_arr = np.array([f[2] for f in filtered])
-        conf_arr = np.array([f[1] for f in filtered])
+        boxes_arr = np.array([f[3] for f in filtered])
+        conf_arr = np.array([f[2] for f in filtered])
         keep_idxs = nms_xyxy(boxes_arr, conf_arr, max_iou=max_iou)
 
-        results: List[Tuple[int, float, float, float, float, float, float]] = []
+        results: List[Tuple[int, str, float, float, float, float, float, float]] = []
         for i in keep_idxs:
-            cls_id, conf, (x1, y1, x2, y2), area_frac = filtered[i]
+            cls_id, cls_label, conf, (x1, y1, x2, y2), area_frac = filtered[i]
             x = x1 / w
             y = y1 / h
             bw = (x2 - x1) / w
             bh = (y2 - y1) / h
-            results.append((cls_id, conf, x, y, bw, bh, area_frac))
+            results.append((cls_id, cls_label, conf, x, y, bw, bh, area_frac))
         return results

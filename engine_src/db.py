@@ -30,7 +30,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             processed INTEGER NOT NULL DEFAULT 0,
             processed_fps REAL,
             max_conf REAL,
-            max_conf_time_sec REAL
+            max_conf_time_sec REAL,
+            max_conf_cls_id INTEGER,
+            max_conf_label TEXT
         )
         """
     )
@@ -50,6 +52,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             clip_id TEXT NOT NULL,
             frame_time_sec REAL NOT NULL,
             cls_id INTEGER NOT NULL,
+            cls_label TEXT,
             conf REAL NOT NULL,
             x REAL NOT NULL,
             y REAL NOT NULL,
@@ -86,6 +89,15 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             "temp_c": "INTEGER",
             "bar_date": "TEXT",
             "bar_time": "TEXT",
+            "max_conf_cls_id": "INTEGER",
+            "max_conf_label": "TEXT",
+        },
+    )
+    _ensure_columns(
+        conn,
+        "detections",
+        {
+            "cls_label": "TEXT",
         },
     )
     conn.commit()
@@ -108,7 +120,8 @@ def compute_clip_id(path: str | Path, file_size: int, file_mtime_utc: str) -> st
 
 def get_clip_state(conn: sqlite3.Connection, clip_id: str) -> dict | None:
     row = conn.execute(
-        "SELECT processed, processed_fps, max_conf, max_conf_time_sec FROM clips WHERE clip_id=?",
+        "SELECT processed, processed_fps, max_conf, max_conf_time_sec, max_conf_cls_id, max_conf_label "
+        "FROM clips WHERE clip_id=?",
         (clip_id,),
     ).fetchone()
     if not row:
@@ -118,6 +131,8 @@ def get_clip_state(conn: sqlite3.Connection, clip_id: str) -> dict | None:
         "processed_fps": row[1],
         "max_conf": row[2],
         "max_conf_time_sec": row[3],
+        "max_conf_cls_id": row[4],
+        "max_conf_label": row[5],
     }
 
 
@@ -138,9 +153,9 @@ def upsert_clip_metadata(
             clip_id, clip_path, file_size, file_mtime_utc,
             duration_sec, video_fps, width, height,
             site, temp_f, temp_c, bar_date, bar_time,
-            processed, processed_fps, max_conf, max_conf_time_sec
+            processed, processed_fps, max_conf, max_conf_time_sec, max_conf_cls_id, max_conf_label
         )
-        VALUES(?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL)
+        VALUES(?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,NULL,NULL)
         ON CONFLICT(clip_id) DO UPDATE SET
             clip_path=excluded.clip_path,
             file_size=excluded.file_size,
@@ -183,6 +198,8 @@ def write_clip_results(
     detections: Iterable[Sequence],
     max_conf: float,
     max_conf_time_sec: float,
+    max_conf_cls_id: int | None,
+    max_conf_label: str | None,
 ) -> None:
     cur = conn.cursor()
     cur.execute("BEGIN")
@@ -198,13 +215,14 @@ def write_clip_results(
         )
     if det_rows:
         cur.executemany(
-            "INSERT INTO detections(clip_id, frame_time_sec, cls_id, conf, x, y, w, h, area_frac) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO detections(clip_id, frame_time_sec, cls_id, cls_label, conf, x, y, w, h, area_frac) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
             det_rows,
         )
     cur.execute(
-        "UPDATE clips SET processed=1, processed_fps=?, max_conf=?, max_conf_time_sec=? WHERE clip_id=?",
-        (processed_fps, max_conf, max_conf_time_sec, clip_id),
+        "UPDATE clips SET processed=1, processed_fps=?, max_conf=?, max_conf_time_sec=?, "
+        "max_conf_cls_id=?, max_conf_label=? WHERE clip_id=?",
+        (processed_fps, max_conf, max_conf_time_sec, max_conf_cls_id, max_conf_label, clip_id),
     )
     conn.commit()
 

@@ -37,5 +37,21 @@ def test_smoke():
             "SELECT name FROM sqlite_master WHERE type='table' AND name='detections'"
         ).fetchone()
         assert det_table is not None
+
+        det_cols = {row[1] for row in conn.execute("PRAGMA table_info(detections)").fetchall()}
+        assert "cls_label" in det_cols
+
+        clip_cols = {row[1] for row in conn.execute("PRAGMA table_info(clips)").fetchall()}
+        assert "max_conf_cls_id" in clip_cols
+        assert "max_conf_label" in clip_cols
+
+        det_count = conn.execute("SELECT COUNT(*) FROM detections").fetchone()[0]
+        if det_count > 0:
+            labels = [row[0] for row in conn.execute("SELECT DISTINCT cls_label FROM detections").fetchall()]
+            assert all(isinstance(lbl, str) and len(lbl) > 0 for lbl in labels)
+
+        max_conf, max_conf_label = conn.execute("SELECT max_conf, max_conf_label FROM clips").fetchone()
+        if float(max_conf or 0.0) > 0.0:
+            assert isinstance(max_conf_label, str) and len(max_conf_label) > 0
     finally:
         cleanup_temp_dir(tmp_path)

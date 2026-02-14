@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,12 +58,31 @@ def parse_mmdd_from_filename(name: str) -> Optional[Tuple[int, int]]:
     return mm, dd
 
 
+def resolve_bundled_ffprobe() -> Optional[Path]:
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).resolve().parent
+        candidates = [
+            base / "ffprobe.exe",
+            base / "_internal" / "ffprobe.exe",
+        ]
+    else:
+        script_dir = Path(__file__).resolve().parent
+        repo_root = script_dir.parent
+        candidates = [
+            script_dir / "ffprobe.exe",
+            script_dir / "tools" / "ffprobe.exe",
+            repo_root / "ffprobe.exe",
+        ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def get_creation_time_utc(clip_path: Path) -> Optional[datetime]:
-    # Try ffprobe if available to read creation_time metadata.
-    script_dir = Path(__file__).resolve().parent
-    repo_root = script_dir.parent.parent
-    ffprobe = repo_root / "ffprobe.exe"
-    if not ffprobe.exists():
+    # Use the bundled ffprobe.exe only.
+    ffprobe = resolve_bundled_ffprobe()
+    if ffprobe is None:
         return None
     try:
         result = subprocess.run(
