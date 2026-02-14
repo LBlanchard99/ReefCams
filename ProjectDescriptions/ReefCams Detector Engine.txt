@@ -1,0 +1,309 @@
+# ADDENDUM: ReefCams Engine (Python) — Minimal Template + Must-Pass Tests
+Paste this block **along with** the main ReefCams project template. This addendum defines the “engine.exe” implementation contract, folder structure, module boundaries, and required tests. Keep it lean; do not add prototype bloat.
+Existing prototype for reference ONLY: wildlife_presence_md.py
+---
+
+## A) Engine packaging layout (inside Processor zip)
+
+Processor/
+  ReefCams.Processor.exe
+  ReefCams.Viewer.exe
+  engine/
+    engine.exe                  # packaged from engine_src/engine.py (PyInstaller/Nuitka)
+    models/
+      md_v1000_redwood_1280_static12.onnx
+    benchmark/
+      benchmark_10s.mov         # representative 10s clip (included in package)
+    README_ENGINE.md            # short: contract + troubleshooting
+  data/
+    app.db
+  config/
+    config.json
+
+Viewer-only zip excludes engine/ entirely.
+
+---
+
+## B) Minimal Python source structure (before packaging)
+
+engine_src/
+  engine.py          # CLI entrypoint: process / benchmark / probe only
+  md.py              # MegaDetector wrapper (ORT session + preprocess/postprocess + infer)
+  video.py           # timestamp-based sampling + metadata probing
+  db.py              # SQLite schema ensure + transactional writes + idempotency
+  models.py          # constants: default paths/providers/thresholds
+  tests/
+    test_smoke.py
+    test_sampling.py
+    test_db_idempotent.py
+    test_provider_fallback.py
+    test_benchmark.py
+    test_no_source_writes.py
+
+Optional: combine models.py into engine.py if desired, but keep defaults centralized and stable.
+
+---
+
+## C) Hard boundaries (do not violate)
+
+engine.py (CLI ONLY)
+- Parses args.
+- Calls process_clip(...) or run_benchmark(...).
+- Emits JSON Lines (JSONL) progress to stdout.
+- Exits 0 on success, non-zero on error.
+- No detection math, no SQL strings, no OpenCV logic.
+
+md.py (Detector wrapper ONLY)
+- ONNXRuntime session setup, providers ordering.
+- Letterbox preprocess and postprocess math.
+- infer(frame_bgr) → detections (normalized boxes).
+- Keep only minimal NMS and sanity filters.
+- NO: review images, tracking, folder evaluation, processed logs.
+
+video.py (Video IO ONLY)
+- probe_clip(path) → duration_sec, video_fps, width, height, file timestamps if available.
+- sample_frames_with_times(path, fps) → Iterable[(t_sec_actual, frame_bgr)].
+- Must sample by timestamp (POS_MSEC), not by frame index stepping.
+
+db.py (SQLite ONLY)
+- ensure_schema(db_path): create tables/indexes if missing.
+- Transactional writes.
+- Idempotency rules (skip if already processed at same fps unless --force).
+- Delete/replace results per clip within a transaction (no duplicates).
+- NO file writes other than DB.
+
+models.py (Constants ONLY)
+- default provider string: "DmlExecutionProvider,CPUExecutionProvider"
+- default conf: 0.001
+- default min_area_frac: 0.0001
+- default model relative path: ".\\models\\md_v1000_redwood_1280_static12.onnx"
+- default benchmark relative path: ".\\benchmark\\benchmark_10s.mov"
+
+---
+
+## D) Engine contract (what WPF depends on)
+
+### D1) Process command (stable API v1)
+engine.exe process --clip "<path>" --fps 1 --db "<dbpath>" [--model "<modelpath>"] [--provider "DmlExecutionProvider,CPUExecutionProvider"] [--force]
+
+Rules:
+- Reads clip only; NEVER writes to source folders.
+- Writes ONLY to SQLite at --db.
+- Defaults: fps=1, model=redwood_static path (relative), providers DML then CPU.
+- Uses very permissive thresholds:
+  - conf_thresh = 0.001
+  - min_area_frac = 0.0001
+- Saves everything needed for viewing/postprocessing:
+  - Clip metadata (duration, fps, width/height, file timestamp)
+  - Frames sampled with accurate timecodes
+  - All detections per sampled frame (normalized boxes + conf)
+  - Per-frame max confidence
+  - Per-clip max confidence + time-of-max
+  - processed flag + processed_fps
+
+Idempotency:
+- If clip already processed at same fps and not --force:
+  - fast exit 0 without rewriting results
+- If --force or fps changed:
+  - delete+replace frames/detections for that clip_id inside a single transaction
+
+### D2) Benchmark command (sanity + estimate)
+engine.exe benchmark --fps 1 [--provider "..."] [--model "<modelpath>"] [--clip "<benchmarkclip>"] [--db "<dbpath>"]
+
+Benchmark must:
+- Measure model load time.
+- Run the same sampling+infer loop used in processing.
+- Report:
+  - providers requested
+  - providers actually used (session.get_providers())
+  - avg inference ms, p95 inference ms
+  - total end-to-end ms (decode+infer)
+  - estimate seconds per 10s clip at fps=1
+
+---
+
+## E) JSONL stdout progress (recommended and stable)
+
+Process:
+- Start:
+  {"type":"start","clip":"...","fps":1,"provider_requested":["DmlExecutionProvider","CPUExecutionProvider"],"model":"..."}
+- Per sampled frame:
+  {"type":"frame","clip":"...","t":3.0,"max_conf_frame":0.83,"det_count":2}
+- Done:
+  {"type":"done","clip":"...","frames":10,"max_conf":0.83,"max_t":3.0,"total_ms":512.3,"provider_used":"DmlExecutionProvider"}
+- Error:
+  {"type":"error","clip":"...","message":"...","exception":"..."}
+
+Benchmark:
+- {"type":"benchmark_result","provider_requested":[...],"provider_used":"...","load_ms":...,"avg_infer_ms":...,"p95_infer_ms":...,"total_ms":...,"estimate_per_10s_s":...}
+
+WPF should treat stdout as best-effort progress; DB is source of truth.
+
+---
+
+## F) Sampling algorithm (must be timestamp-based)
+
+Goal: accurate seek markers + overlay persistence.
+
+Use:
+- For t = 0, 1/fps, 2/fps, ... < duration:
+  cap.set(CAP_PROP_POS_MSEC, t*1000)
+  ret, frame = cap.read()
+  t_actual = cap.get(CAP_PROP_POS_MSEC) / 1000
+  yield (t_actual, frame)
+
+Notes:
+- OpenCV seeking can be imprecise; t_actual is authoritative for DB.
+- Ensure monotonic times:
+  - if t_actual < prev_t_actual, clamp to prev_t_actual (or skip)
+- Duration can come from:
+  - cap.get(CAP_PROP_FRAME_COUNT) / cap.get(CAP_PROP_FPS), with fallback heuristics.
+
+---
+
+## G) Detection output format (store normalized boxes)
+
+From infer(frame_bgr), store each detection as:
+- cls_id (int)
+- conf (float)
+- x, y, w, h normalized to [0..1] relative to original frame width/height
+- area_frac (float; normalized area of box)
+
+This makes WPF overlays robust across scaling/DPI and export packages.
+
+---
+
+## H) Minimal SQLite tables (engine-owned reference)
+
+Clips:
+- clips(
+    clip_id TEXT PRIMARY KEY,
+    clip_path TEXT NOT NULL,
+    file_size INTEGER,
+    file_mtime_utc TEXT,
+    duration_sec REAL,
+    video_fps REAL,
+    width INTEGER,
+    height INTEGER,
+    processed INTEGER NOT NULL DEFAULT 0,
+    processed_fps REAL,
+    max_conf REAL,
+    max_conf_time_sec REAL
+  )
+
+Frames:
+- frames(
+    clip_id TEXT NOT NULL,
+    frame_time_sec REAL NOT NULL,
+    max_conf_frame REAL NOT NULL,
+    PRIMARY KEY (clip_id, frame_time_sec)
+  )
+
+Detections:
+- detections(
+    clip_id TEXT NOT NULL,
+    frame_time_sec REAL NOT NULL,
+    cls_id INTEGER NOT NULL,
+    conf REAL NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    w REAL NOT NULL,
+    h REAL NOT NULL,
+    area_frac REAL,
+    PRIMARY KEY (clip_id, frame_time_sec, cls_id, conf, x, y, w, h)
+  )
+
+Benchmarks (optional but recommended):
+- benchmarks(
+    run_at_utc TEXT,
+    provider_requested TEXT,
+    provider_used TEXT,
+    fps REAL,
+    load_ms REAL,
+    avg_infer_ms REAL,
+    p95_infer_ms REAL,
+    total_ms REAL,
+    estimate_per_10s_s REAL
+  )
+
+Indexes (minimum):
+- CREATE INDEX idx_frames_clip ON frames(clip_id);
+- CREATE INDEX idx_det_clip_time ON detections(clip_id, frame_time_sec);
+
+Engine must not invent extra tables lightly; coordinate via ReefCams.Core if shared.
+
+---
+
+## I) Clip identity (engine side)
+
+Engine should not assume filenames are unique.
+
+Preferred: WPF computes clip_id and stores it in clips table.
+If engine must compute clip_id:
+- clip_id = SHA1( normalized_full_path + "|" + file_size + "|" + file_mtime_utc )
+
+Engine must use clip_id consistently for frames/detections.
+
+---
+
+## J) Must-pass tests (guardrails against regressions)
+
+All tests must pass in CPU-only environments; if DML is present, it should use it.
+
+1) test_smoke.py
+- Run: engine.exe process --clip benchmark_10s.mov --db temp.db --fps 1
+- Assert:
+  - clips.processed=1
+  - frames count ~10–11 (depending on duration rounding)
+  - frames.frame_time_sec monotonic
+  - detections table exists (0 rows acceptable)
+
+2) test_sampling.py
+- Call sample_frames_with_times(..., fps=1)
+- Assert:
+  - times monotonic non-decreasing
+  - times within [0, duration + epsilon]
+  - spacing roughly ~1s (tolerance allowed)
+
+3) test_db_idempotent.py
+- Run process twice same fps, no --force
+- Assert:
+  - frame row count unchanged
+  - detection row count unchanged
+  - second run exits 0 quickly (optional parse stdout total_ms small)
+
+4) test_provider_fallback.py
+- Run with providers "DmlExecutionProvider,CPUExecutionProvider"
+- Assert:
+  - engine succeeds
+  - stdout (or DB/benchmark) reports provider_used as either DML or CPU
+  - If DML unavailable, engine still works (retry CPU-only if needed)
+
+5) test_benchmark.py
+- Run: engine.exe benchmark --fps 1
+- Assert JSON includes:
+  - provider_used
+  - avg_infer_ms, p95_infer_ms, estimate_per_10s_s
+  - estimate_per_10s_s > 0
+
+6) test_no_source_writes.py
+- Put a clip in a temp folder.
+- Snapshot directory listing.
+- Run process with db outside that folder.
+- Snapshot listing again.
+- Assert: no new files created in the clip folder.
+
+---
+
+## K) Guardrail docs (keep lean)
+
+README_ENGINE.md must state:
+- Only process/benchmark/probe commands exist in v1.
+- Only outputs: SQLite writes + JSONL stdout.
+- Never writes to source clip folders.
+- No review images, no tracking, no processed log files.
+
+CONTRIBUTING_ENGINE.md (optional):
+- “If you need new outputs, add them to SQLite schema and update Viewer accordingly; do not add ad-hoc sidecar files.”
+
+END OF ENGINE ADDENDUM

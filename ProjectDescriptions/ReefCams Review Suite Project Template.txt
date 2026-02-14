@@ -1,0 +1,458 @@
+# ReefCams Review Suite — Codex Agent Project Template (WPF + SQLite + Python Engine)
+
+You are a Codex coding agent working on one component of the ReefCams Review Suite. You must understand the whole application so your changes integrate cleanly with other parts.
+
+---
+
+## 0) Non-negotiable requirements (read first)
+
+1) Portable distribution
+- The entire app must ship as a single zip folder that the user can extract anywhere and run.
+- No installers. No external dependencies required beyond what is shipped in the folder.
+
+2) Windows GUI
+- Primary UI is C# .NET WPF.
+- Two separate executables:
+  - ReefCams.Processor.exe (processing + viewer features)
+  - ReefCams.Viewer.exe (viewer-only; no processing deps)
+
+3) Never modify source clips
+- Absolutely no edits/moves/renames/writes inside the clip folders.
+- No sidecars next to clips.
+- All writes go to Project Directory (next to “ReefCams Status Sheet”) and/or next to application executable (export packages).
+- Source clip paths are read-only inputs; we only open for reading.
+
+4) Local DB + config
+- Use SQLite for all indexed data and processing results.
+- Config stored as JSON in Project Directory.
+
+5) Processing philosophy
+- During processing, do NOT filter out detections (use extremely permissive thresholds):
+  - conf_thresh = 0.001
+  - min_area_frac = 0.0001
+- Save everything needed for viewing and postprocessing into SQLite.
+- Compute and store per-clip MaxConf and time-of-max.
+
+6) Playback + overlays
+- Viewer plays original video from source folder read-only.
+- Detection boxes and reef boundary are drawn as graphical overlays, never altering video data.
+- Processing is sampled at fps=1 by default. Boxes persist until the next processed sample time.
+
+7) Python detector engine
+- Detection is performed by a standalone packaged executable:
+  - engine.exe (PyInstaller/Nuitka packaged Python)
+- Stable CLI contract:
+  - engine.exe process --clip "<path>" --fps 1 --db "<path>"
+  - engine.exe benchmark ... for sanity/performance
+- Prefer ONNXRuntime DirectML:
+  - Providers requested (priority order): DmlExecutionProvider,CPUExecutionProvider
+  - Must work if DML not available by falling back to CPU.
+
+---
+
+## 1) What the product is
+
+A desktop application for reviewing short underwater reef camera clips:
+- Users ingest a folder hierarchy of clips, index them into SQLite, and optionally process clips with an ML detector (MegaDetector v1000, model tier redwood_static).
+- The UI supports browsing by site/folder, viewing clips on a timeline, filtering by detection rank, and overlaying detection boxes.
+- Users can mark completion at multiple levels and export “review packages” containing selected clips + metadata DB + the Viewer app.
+
+---
+
+## 2) Folder layout of source clips (immutable)
+
+The user selects a Clip Root directory containing projects, sites, and camera retrieval folders.
+
+Example:
+Top level folder: Winter 2026
+- F11, F12, I04  (Camera Sites)
+  - DCIM1, DCIM2, DCIM3... (Retrieval batches)
+    - 100EK113, 101EK113, 102EK113... (Session subfolders; roll when clip number passes 999)
+      - Clips: MMDD0xxx.MOV (10-second clips)
+        - Example: Dec 11 clip 123 → 12110123.MOV
+        - Clip names can repeat across days/sessions, so filename is NOT unique.
+
+Important:
+- Site/CameraFolder/Session/Clip must be identified by full path and stable IDs.
+- Do not rely on filenames.
+
+---
+
+## 3) Project Directory (mutable app data location)
+
+User chooses a Project Directory that stores all app data. This directory is where:
+- SQLite database lives
+- Config JSON lives
+- Export packages are built
+- Reef boundary metadata is stored
+
+Project Directory is “next to ReefCams Status Sheet” (external file). The app should not edit that sheet; it’s an anchor to locate the project directory.
+
+Expected layout:
+<ProjectDir>/
+  ReefCams Status Sheet.*   (external; presence may be optional)
+  data/
+    app.db
+  config/
+    config.json
+  logs/
+    app.log (optional)
+  exports/
+    ... export packages ...
+
+---
+
+## 4) Application outputs (must never touch clip folders)
+
+All data writes are to:
+- <ProjectDir>/data/app.db
+- <ProjectDir>/config/config.json
+- <ProjectDir>/exports/<ExportName>/...
+- Optional logs under <ProjectDir>/logs/
+
+---
+
+## 5) Processing workflow (Processor app)
+
+User steps
+1. Choose Project Directory.
+2. Add/select clip root folder(s).
+3. Index clips into SQLite (scan folder hierarchy, store clip metadata).
+4. Mark completion at different levels:
+   - Camera Site
+   - Camera Folder (DCIMx)
+   - Session Subfolder (100EK113)
+   - “Last clip completed” within a session (marks that clip and all earlier clips in that session completed)
+5. Select folders/subfolders to process.
+6. Processing runs engine.exe process per clip (or in batches).
+
+Processing per clip
+- Sample frames at fps (default 1).
+- For each sampled frame:
+  - Run detector inference
+  - Save all detections to DB (with boxes, confidences, etc.)
+  - Save per-frame max confidence
+- For clip:
+  - Store max confidence over frames and its time in seconds
+  - Mark clip processed
+
+Provider/model requirements
+- ONNXRuntime providers: request DmlExecutionProvider,CPUExecutionProvider
+- Model: redwood_static (MD v1000 redwood static shape ONNX)
+- fps default: 1 (configurable)
+
+---
+
+## 6) Viewer workflow (Viewer app)
+
+Navigation & metrics
+- Left TreeView: Project → Site → CameraFolder → Session
+- Each node displays metrics:
+  - Completed vs Remaining
+  - Processed vs Unprocessed (excluding unprocessed-but-completed clips from “remaining to process” metric)
+
+Timeline
+- Right panel lists clips in chronological order for the selected node.
+- Show:
+  - timestamp
+  - clip name
+  - rank (Very High / High / Medium / Low / Very Low / Zero)
+  - max_conf
+  - processed/completed status
+  - Δt time since previous clip (seconds/minutes/hours)
+- Filter:
+  - hide clips below a minimum rank threshold; show “hidden gap” rows like Git:
+    - “18 hidden clips (<= Low) • Δt to next visible: 6m 12s [Expand]”
+- Selecting a clip loads it into player.
+
+Playback & overlays
+- Bottom player: play/pause/seek, jump-to-max-frame.
+- Seek bar displays markers at processed frame times with intensity = max_conf_frame.
+- Detection overlay:
+  - toggle on/off
+  - confidence threshold slider (default to the clip’s rank threshold lower bound)
+  - padding slider (pixels)
+  - persist until next processed frame: use most recent processed frame time <= current playback time
+- Reef boundary overlay:
+  - toggle on/off (only if defined for this session)
+  - boundary drawn as polygon/polyline overlay
+
+Completion actions
+- Mark clip completed.
+- Mark “up to this clip completed” within session.
+
+---
+
+## 7) Export/Copy feature (review package)
+
+User selects a node containing processed but not completed clips and exports a review package.
+
+Inputs:
+- Source scope: selected Site/DCIM/Session
+- Threshold: export clips with rank >= selected rank (or max_conf >= numeric)
+- Destination folder
+
+Output:
+- Copies qualifying clips into export folder (without modifying originals)
+- Copies a subset SQLite DB with metadata & detections for included clips
+- Copies Viewer app (and playback engine dependencies)
+- Includes reef boundary data if defined for included scope
+- Avoid filename collisions by mirroring folder structure under clips/ in export.
+
+Export folder structure:
+<ExportDest>/
+  Viewer.exe
+  player/ (mpv binaries if used)
+  config/
+    config.json (threshold defaults)
+  data/
+    exported.db
+  clips/
+    <mirrored project/site/DCIM/session/... original file names ...>
+
+---
+
+## 8) Reef boundary marking (per retrieval session)
+
+Boundary is defined per Session (default: SessionSubfolder).
+
+Workflow:
+- User selects a session or clip in that session
+- Enters “Define Reef Boundary” mode:
+  - pick a clip/frame where reef is fully exposed
+  - draw polygon boundaries (normalized coordinates)
+  - save to DB
+- Nodes with boundary defined show an icon badge in TreeView.
+- Boundary included in export DB.
+
+---
+
+## 9) Engine (Python) — strict minimal scope
+
+engine.exe commands
+
+A) Process clip
+engine.exe process --clip "<path>" --fps 1 --db "<dbpath>" [--model "<modelpath>"] [--provider "DmlExecutionProvider,CPUExecutionProvider"] [--force]
+
+Rules:
+- Reads clip only.
+- Writes only into SQLite DB at --db.
+- Saves:
+  - clip metadata (duration, fps, dimensions, file timestamp)
+  - frames (time, max_conf_frame)
+  - detections (time, class, conf, normalized box, area_frac)
+  - clip max_conf and max_conf_time_sec
+  - processed flag + processed_fps
+
+Processing defaults (must remain permissive)
+- conf_thresh = 0.001
+- min_area_frac = 0.0001
+
+Model
+- MD v1000 redwood static input (1280 static shape) ONNX
+- engine defaults to relative path: .\models\md_v1000_redwood_1280_static12.onnx
+
+Provider
+- default requested provider list: DmlExecutionProvider first, fallback CPUExecutionProvider
+
+B) Benchmark (sanity + estimate)
+engine.exe benchmark --fps 1 [--provider "..."] [--model "<modelpath>"] [--clip "<benchmarkclip>"] [--db "<dbpath>"]
+
+Benchmark must:
+- measure model load time
+- run the same sampling+infer loop as processing
+- report providers requested + providers actually used
+- report avg + p95 inference ms, total end-to-end ms
+- report estimate seconds per 10-second clip at fps=1
+
+Output format for progress (stdout)
+Engine prints JSON lines for WPF to parse:
+- start, frame, done, benchmark_result, error
+
+Example:
+{"type":"frame","t":3.0,"max_conf":0.83,"dets":2}
+
+---
+
+## 10) Video playback in WPF
+
+Playback must:
+- play .MOV H.264 + PCM audio reliably across machines
+- overlays must sync to playback time
+
+Preferred approach:
+- embed a deterministic playback engine (e.g., mpv/libmpv) shipped in the app folder
+- WPF draws overlays on top of video surface
+
+Overlay timecode algorithm (must follow):
+- Let frames[] be sorted processed times.
+- For playback time t, show detections for the greatest frames[i] <= t.
+- Persist until t crosses the next processed time.
+
+Seek marker behavior:
+- Markers at each FrameTimeSec with intensity = MaxConfFrame
+- Clicking marker seeks to that time.
+- Jump-to-max-frame seeks to MaxConfTimeSec.
+
+---
+
+## 11) Rank thresholds (config)
+
+Rank buckets and defaults:
+- Very High: > 0.9
+- High: 0.6 to 0.9
+- Medium: 0.45 to 0.6
+- Low: 0.1 to 0.45
+- Very Low: 0.01 to 0.1
+- Zero: < 0.01 or no detections
+
+Thresholds stored in <ProjectDir>/config/config.json and must be editable.
+
+Overlay default conf threshold:
+- default = lower bound of clip’s rank bucket.
+
+---
+
+## 12) Suggested solution architecture (WPF)
+
+Projects
+- ReefCams.Core (shared logic + DB models + config + ranking)
+- ReefCams.Viewer (WPF app)
+- ReefCams.Processor (WPF app)
+- ReefCams.Engine (python packaged separately; treated as external tool)
+
+Core responsibilities
+- SQLite schema + migrations
+- Path scanning/indexing into DB (read-only scan)
+- Clip identity generation (stable)
+- Queries for tree metrics and timeline
+- Rank calculation and filtering
+- Export package builder
+
+Viewer responsibilities
+- TreeView navigation, timeline UI, player UI
+- Overlay rendering for detections + reef boundary
+- Completion marking UI
+
+Processor responsibilities
+- Everything in Viewer plus:
+  - processing queue UI
+  - invoking engine.exe
+  - displaying benchmark results
+  - background processing management
+  - export building (can also be in Core if shared)
+
+Concurrency
+- UI must remain responsive.
+- Long operations (indexing, exporting, processing) run on background tasks.
+- DB writes are transactional and safe.
+
+---
+
+## 13) Clip identity & uniqueness (must implement)
+
+Clip names are not unique. Use a stable ID.
+
+Recommended:
+- clip_id = SHA1(normalized_full_path + "|" + file_size + "|" + file_mtime_utc)
+Store original path and those fields in DB.
+
+All relationships in DB must use clip_id, not filename.
+
+---
+
+## 14) Minimal SQLite schema (reference)
+
+Agents should not invent new schema casually; coordinate via ReefCams.Core.
+
+Tables (minimal):
+- clip_roots(root_id, root_path)
+- clips(
+    clip_id, root_id,
+    site, dcim, session, clip_name, clip_path,
+    created_time_utc, file_mtime_utc, file_size,
+    duration_sec, width, height, video_fps,
+    processed, processed_fps, max_conf, max_conf_time_sec,
+    completed, completed_at_utc
+  )
+- frames(clip_id, frame_time_sec, max_conf_frame)
+- detections(clip_id, frame_time_sec, cls_id, conf, x, y, w, h, area_frac)
+- reef_boundaries(scope_type, scope_id, clip_id_reference, points_json, updated_at_utc)
+- benchmarks(run_at_utc, provider_requested, provider_used, fps, avg_infer_ms, p95_infer_ms, total_ms, estimate_per_10s_s)
+
+Indexes:
+- clips by (site, dcim, session, created_time)
+- frames by (clip_id, frame_time_sec)
+- detections by (clip_id, frame_time_sec)
+- clips by processed/completed for metrics queries
+
+---
+
+## 15) UI layout (dark mode) — canonical screens
+
+Main Viewer/Processor screen
+- Top bar: project + search + tools (Export, Define Boundary, Benchmark in Processor)
+- Left: TreeView with node badges + boundary icon
+- Right: Timeline with filters, rank threshold, hide gaps, Δt display, expandable hidden rows
+- Bottom: Player with seek bar markers, overlay toggles, sliders, jump-to-max, completion buttons
+
+Boundary Editor mode
+- Video paused on selected frame
+- Editable polyline (normalized points)
+- Save/cancel
+
+Export dialog
+- scope, threshold, destination, include viewer+db, summary
+
+Benchmark dialog (Processor only)
+- provider requested/used
+- avg/p95 inference ms
+- estimate sec per clip
+
+---
+
+## 16) Agent instructions (how to work)
+
+When implementing a component:
+1. Do not violate any non-negotiables.
+2. Do not introduce extra features beyond the component scope.
+3. Keep API boundaries stable:
+   - Core module owns DB schema, queries, config models.
+   - Viewer/Processor consume Core.
+   - Processor invokes engine.exe; Viewer never depends on engine.
+4. Be careful with clip paths:
+   - Never write to source directories.
+   - Do not assume filenames are unique.
+5. Always consider performance:
+   - Use virtualization for timeline lists.
+   - Use indexes and targeted queries.
+   - Avoid loading all detections for all clips; load per clip on demand.
+
+---
+
+## 17) Component task list (examples to assign to agents)
+
+- Core: SQLite schema + migrations + DB access layer
+- Core: folder scanning/indexing and stable clip_id generation
+- Core: ranking config + rank computation utilities
+- Viewer: TreeView + metrics queries + binding models
+- Viewer: Timeline list + filtering + hidden gap rows + Δt display
+- Viewer: Player abstraction + seek marker UI + overlay rendering
+- Viewer: Completion marking UI + DB update paths
+- Viewer: Reef boundary editor + DB integration + overlay toggle
+- Processor: processing queue + invoking engine.exe + progress parsing
+- Processor: benchmark UI + store benchmark results
+- Processor: export package builder + DB subset + clip copying + viewer copy
+
+---
+
+## 18) Definition of done (for any component)
+
+A component is “done” when:
+- It compiles and runs in the portable folder model
+- It does not touch source clip folders
+- It integrates with the shared DB/config models
+- It has basic error handling and clear user feedback
+- It does not regress performance significantly
+
+END OF TEMPLATE
