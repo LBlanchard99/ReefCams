@@ -1,0 +1,14 @@
+{
+  "version": "v1.0",
+  "files": [
+    {
+      "name": "reefcams-models-v1.0.zip",
+      "sha256": "8F88A2ADE42167DAB0D3AA180735FC624CD83C95A034290CD9C78214D3366C6E",
+      "url": "https://github.com/LBlanchard99/ReefCams/releases/download/v1.0/reefcams-models-v1.0.zip",
+      "expectedFiles": [
+        "md_v1000_redwood_1280_static12.onnx",
+        "md_v1000_redwood_1280_static12.onnx.data"
+      ]
+    }
+  ]
+}
