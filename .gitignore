@@ -244,3 +244,9 @@ artifacts/
 build_restore_diag.log
 pytest-cache-files-*/
 processor_ui_state.json
+
+# Exports
+TestProject
+NewProject
+Export
+.appdata

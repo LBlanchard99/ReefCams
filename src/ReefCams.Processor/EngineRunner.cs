@@ -3,12 +3,15 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using ReefCams.Core;
 
 namespace ReefCams.Processor;
 
 public sealed class EngineRunner
 {
+    private static readonly ConcurrentDictionary<string, bool> SupportsDisableBarMetadataByEnginePath = new(StringComparer.OrdinalIgnoreCase);
+
     public async Task RunProcessClipAsync(
         string engineExePath,
         string dbPath,
@@ -17,7 +20,13 @@ public sealed class EngineRunner
         IProgress<string>? statusProgress,
         CancellationToken cancellationToken)
     {
-        var args = BuildProcessArgs(dbPath, clipPath, processing);
+        var supportsDisableBarMetadata = await SupportsDisableBarMetadataFlagAsync(engineExePath, cancellationToken).ConfigureAwait(false);
+        if (!supportsDisableBarMetadata)
+        {
+            throw new InvalidOperationException("engine.exe does not support --disable-bar-metadata. Rebuild engine_dist from current engine_src.");
+        }
+
+        var args = BuildProcessArgs(dbPath, clipPath, processing, disableBarMetadata: true);
         await RunEngineAsync(engineExePath, args, statusProgress, cancellationToken).ConfigureAwait(false);
     }
 
@@ -29,7 +38,13 @@ public sealed class EngineRunner
         IProgress<string>? statusProgress,
         CancellationToken cancellationToken)
     {
-        var args = BuildBenchmarkArgs(dbPath, clipPath, processing);
+        var supportsDisableBarMetadata = await SupportsDisableBarMetadataFlagAsync(engineExePath, cancellationToken).ConfigureAwait(false);
+        if (!supportsDisableBarMetadata)
+        {
+            throw new InvalidOperationException("engine.exe does not support --disable-bar-metadata. Rebuild engine_dist from current engine_src.");
+        }
+
+        var args = BuildBenchmarkArgs(dbPath, clipPath, processing, disableBarMetadata: true);
         BenchmarkRecord? result = null;
 
         await RunEngineAsync(
@@ -160,7 +175,7 @@ public sealed class EngineRunner
         }
     }
 
-    private static string BuildProcessArgs(string dbPath, string clipPath, ProcessingSettings processing)
+    private static string BuildProcessArgs(string dbPath, string clipPath, ProcessingSettings processing, bool disableBarMetadata)
     {
         var builder = new StringBuilder();
         builder.Append("process ");
@@ -168,6 +183,11 @@ public sealed class EngineRunner
         builder.Append("--fps ").Append(processing.Fps.ToString("0.###", CultureInfo.InvariantCulture)).Append(' ');
         builder.Append("--db ").Append(Quote(dbPath)).Append(' ');
         builder.Append("--provider ").Append(Quote(processing.ProviderOrder)).Append(' ');
+        if (disableBarMetadata)
+        {
+            builder.Append("--disable-bar-metadata ");
+        }
+
         if (!string.IsNullOrWhiteSpace(processing.ModelPath))
         {
             builder.Append("--model ").Append(Quote(processing.ModelPath)).Append(' ');
@@ -176,7 +196,7 @@ public sealed class EngineRunner
         return builder.ToString();
     }
 
-    private static string BuildBenchmarkArgs(string dbPath, string clipPath, ProcessingSettings processing)
+    private static string BuildBenchmarkArgs(string dbPath, string clipPath, ProcessingSettings processing, bool disableBarMetadata)
     {
         var builder = new StringBuilder();
         builder.Append("benchmark ");
@@ -184,12 +204,56 @@ public sealed class EngineRunner
         builder.Append("--clip ").Append(Quote(clipPath)).Append(' ');
         builder.Append("--db ").Append(Quote(dbPath)).Append(' ');
         builder.Append("--provider ").Append(Quote(processing.ProviderOrder)).Append(' ');
+        if (disableBarMetadata)
+        {
+            builder.Append("--disable-bar-metadata ");
+        }
+
         if (!string.IsNullOrWhiteSpace(processing.ModelPath))
         {
             builder.Append("--model ").Append(Quote(processing.ModelPath)).Append(' ');
         }
 
         return builder.ToString();
+    }
+
+    private static async Task<bool> SupportsDisableBarMetadataFlagAsync(string engineExePath, CancellationToken cancellationToken)
+    {
+        var key = Path.GetFullPath(engineExePath);
+        if (SupportsDisableBarMetadataByEnginePath.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = engineExePath,
+                Arguments = "process --help",
+                WorkingDirectory = Path.GetDirectoryName(engineExePath) ?? AppContext.BaseDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using var process = new Process { StartInfo = psi };
+            process.Start();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            await Task.WhenAll(stdoutTask, stderrTask, process.WaitForExitAsync(cancellationToken)).ConfigureAwait(false);
+
+            var helpText = $"{stdoutTask.Result}\n{stderrTask.Result}";
+            var supported = helpText.Contains("--disable-bar-metadata", StringComparison.Ordinal);
+            SupportsDisableBarMetadataByEnginePath.TryAdd(key, supported);
+            return supported;
+        }
+        catch
+        {
+            SupportsDisableBarMetadataByEnginePath.TryAdd(key, false);
+            return false;
+        }
     }
 
     private static string Quote(string value) => "\"" + value.Replace("\"", "\\\"") + "\"";

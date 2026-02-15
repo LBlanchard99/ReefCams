@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace ReefCams.Core;
 
@@ -25,7 +26,7 @@ public sealed class ExportBuilder
         IProgress<int>? progress)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var clips = _repository.GetExportCandidates(request.Scope, config.RankThresholds, request.MinimumConfidence);
+        var clips = _repository.GetExportCandidates(request.Scope, request.MinimumConfidence);
         if (clips.Count == 0)
         {
             throw new InvalidOperationException("No clips matched the export criteria.");
@@ -42,25 +43,30 @@ public sealed class ExportBuilder
         Directory.CreateDirectory(configDir);
 
         var copied = 0;
+        var clipPathById = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var clip in clips)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relative = Path.Combine(clip.Site, clip.Dcim, clip.Session, clip.ClipName);
-            var targetPath = Path.Combine(clipsDir, relative);
+            var relative = Path.Combine("clips", clip.Site, clip.Dcim, clip.Session, clip.ClipName);
+            var targetPath = Path.Combine(destination, relative);
             Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? clipsDir);
-            File.Copy(clip.ClipPath, targetPath, overwrite: true);
+            var sourcePath = ResolveClipSourcePath(projectPaths.RootDirectory, clip.ClipPath);
+            File.Copy(sourcePath, targetPath, overwrite: true);
+            clipPathById[clip.ClipId] = relative;
             copied++;
             progress?.Report(copied);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        var exportedDb = Path.Combine(dataDir, "exported.db");
+        var exportedDb = Path.Combine(dataDir, "app.db");
         File.Copy(projectPaths.DbPath, exportedDb, overwrite: true);
-        _repository.TrimDatabaseToClipIds(exportedDb, clips.Select(x => x.ClipId).ToHashSet(StringComparer.OrdinalIgnoreCase));
+        var exportedClipIds = clips.Select(x => x.ClipId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _repository.TrimDatabaseToClipIds(exportedDb, exportedClipIds);
+        RewriteClipPaths(exportedDb, clipPathById);
 
         var exportedConfig = new AppConfig
         {
-            RankThresholds = config.RankThresholds,
+            Timeline = config.Timeline,
             Processing = config.Processing
         };
         var configJson = JsonSerializer.Serialize(exportedConfig, new JsonSerializerOptions
@@ -72,7 +78,11 @@ public sealed class ExportBuilder
 
         if (request.IncludeViewerFiles && !string.IsNullOrWhiteSpace(viewerSourceDirectory) && Directory.Exists(viewerSourceDirectory))
         {
-            CopyDirectory(viewerSourceDirectory, destination, cancellationToken);
+            CopyDirectory(
+                viewerSourceDirectory,
+                destination,
+                cancellationToken,
+                excludeTopLevelNames: ["data", "config", "clips", "exports", "logs"]);
         }
 
         return new ExportResult
@@ -82,7 +92,11 @@ public sealed class ExportBuilder
         };
     }
 
-    private static void CopyDirectory(string sourceDirectory, string destinationDirectory, CancellationToken cancellationToken)
+    private static void CopyDirectory(
+        string sourceDirectory,
+        string destinationDirectory,
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<string>? excludeTopLevelNames = null)
     {
         var src = Path.GetFullPath(sourceDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var dst = Path.GetFullPath(destinationDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -91,10 +105,19 @@ public sealed class ExportBuilder
             return;
         }
 
+        var excludes = new HashSet<string>(
+            excludeTopLevelNames ?? [],
+            StringComparer.OrdinalIgnoreCase);
+
         foreach (var dir in Directory.EnumerateDirectories(sourceDirectory, "*", SearchOption.AllDirectories))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var relative = Path.GetRelativePath(sourceDirectory, dir);
+            if (IsExcludedTopLevelPath(relative, excludes))
+            {
+                continue;
+            }
+
             Directory.CreateDirectory(Path.Combine(destinationDirectory, relative));
         }
 
@@ -102,9 +125,72 @@ public sealed class ExportBuilder
         {
             cancellationToken.ThrowIfCancellationRequested();
             var relative = Path.GetRelativePath(sourceDirectory, file);
+            if (IsExcludedTopLevelPath(relative, excludes))
+            {
+                continue;
+            }
+
             var destinationPath = Path.Combine(destinationDirectory, relative);
             Directory.CreateDirectory(Path.GetDirectoryName(destinationPath) ?? destinationDirectory);
             File.Copy(file, destinationPath, overwrite: true);
         }
+    }
+
+    private static bool IsExcludedTopLevelPath(string relativePath, ISet<string> excludes)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || excludes.Count == 0)
+        {
+            return false;
+        }
+
+        var firstSegment = relativePath
+            .Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+        return firstSegment is not null && excludes.Contains(firstSegment);
+    }
+
+    private static string ResolveClipSourcePath(string projectRootDirectory, string clipPath)
+    {
+        if (Path.IsPathRooted(clipPath))
+        {
+            return clipPath;
+        }
+
+        return Path.GetFullPath(Path.Combine(projectRootDirectory, clipPath));
+    }
+
+    private static void RewriteClipPaths(string dbPath, IReadOnlyDictionary<string, string> clipPathById)
+    {
+        if (clipPathById.Count == 0)
+        {
+            return;
+        }
+
+        using var conn = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadWrite,
+            ForeignKeys = true
+        }.ToString());
+        conn.Open();
+        using var tx = conn.BeginTransaction();
+        using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "UPDATE clips SET clip_path = $clipPath WHERE clip_id = $clipId;";
+        var clipPathParam = cmd.CreateParameter();
+        clipPathParam.ParameterName = "$clipPath";
+        cmd.Parameters.Add(clipPathParam);
+        var clipIdParam = cmd.CreateParameter();
+        clipIdParam.ParameterName = "$clipId";
+        cmd.Parameters.Add(clipIdParam);
+
+        foreach (var entry in clipPathById)
+        {
+            clipIdParam.Value = entry.Key;
+            clipPathParam.Value = entry.Value.Replace('\\', '/');
+            cmd.ExecuteNonQuery();
+        }
+
+        tx.Commit();
     }
 }

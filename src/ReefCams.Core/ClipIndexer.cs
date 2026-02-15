@@ -23,6 +23,7 @@ public sealed class ClipIndexer
 
                 var normalizedRoot = Path.GetFullPath(rootPath);
                 var rootId = _repository.UpsertClipRoot(normalizedRoot);
+                var existingPaths = _repository.GetExistingClipPathsForRoot(rootId);
 
                 var processed = 0;
                 var options = new EnumerationOptions
@@ -40,8 +41,15 @@ public sealed class ClipIndexer
                         continue;
                     }
 
+                    var fullPath = Path.GetFullPath(file);
+                    if (existingPaths.Contains(fullPath))
+                    {
+                        continue;
+                    }
+
                     var clip = BuildIndexedClip(file, normalizedRoot, rootId, cancellationToken);
                     _repository.UpsertIndexedClip(clip);
+                    existingPaths.Add(fullPath);
 
                     processed++;
                     progress?.Report(new IndexProgress { ProcessedCount = processed, CurrentPath = file });

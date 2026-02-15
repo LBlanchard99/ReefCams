@@ -7,6 +7,7 @@ namespace ReefCams.Core;
 
 public sealed class ReefCamsRepository
 {
+    private const string RootGroupPrefix = "@group:";
     private readonly string _dbPath;
 
     public ReefCamsRepository(string dbPath)
@@ -24,7 +25,8 @@ public sealed class ReefCamsRepository
             """
             CREATE TABLE IF NOT EXISTS clip_roots(
                 root_id TEXT PRIMARY KEY,
-                root_path TEXT NOT NULL UNIQUE
+                root_path TEXT NOT NULL UNIQUE,
+                root_name TEXT
             );
             """);
 
@@ -114,11 +116,7 @@ public sealed class ReefCamsRepository
             );
             """);
 
-        conn.Execute("CREATE INDEX IF NOT EXISTS idx_clips_scope_time ON clips(root_id, site, dcim, session, created_time_utc);");
-        conn.Execute("CREATE INDEX IF NOT EXISTS idx_clips_status ON clips(processed, completed);");
-        conn.Execute("CREATE INDEX IF NOT EXISTS idx_frames_clip_time ON frames(clip_id, frame_time_sec);");
-        conn.Execute("CREATE INDEX IF NOT EXISTS idx_det_clip_time ON detections(clip_id, frame_time_sec);");
-
+        EnsureColumn(conn, "clip_roots", "root_name", "TEXT");
         EnsureColumn(conn, "clips", "root_id", "TEXT");
         EnsureColumn(conn, "clips", "dcim", "TEXT");
         EnsureColumn(conn, "clips", "session", "TEXT");
@@ -127,6 +125,13 @@ public sealed class ReefCamsRepository
         EnsureColumn(conn, "clips", "completed", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(conn, "clips", "completed_at_utc", "TEXT");
         EnsureColumn(conn, "benchmarks", "load_ms", "REAL");
+        BackfillClipRootNames(conn);
+
+        conn.Execute("CREATE INDEX IF NOT EXISTS idx_clips_scope_time ON clips(root_id, site, dcim, session, created_time_utc);");
+        conn.Execute("CREATE INDEX IF NOT EXISTS idx_clips_status ON clips(processed, completed);");
+        conn.Execute("CREATE INDEX IF NOT EXISTS idx_clip_roots_name ON clip_roots(root_name);");
+        conn.Execute("CREATE INDEX IF NOT EXISTS idx_frames_clip_time ON frames(clip_id, frame_time_sec);");
+        conn.Execute("CREATE INDEX IF NOT EXISTS idx_det_clip_time ON detections(clip_id, frame_time_sec);");
 
         conn.Execute("PRAGMA foreign_keys=ON;");
     }
@@ -135,17 +140,21 @@ public sealed class ReefCamsRepository
     {
         var fullPath = Path.GetFullPath(rootPath);
         var rootId = Sha1(fullPath.Trim().ToLowerInvariant());
+        var rootName = GetRootDisplayName(fullPath);
 
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
             """
-            INSERT INTO clip_roots(root_id, root_path)
-            VALUES($rootId, $rootPath)
-            ON CONFLICT(root_id) DO UPDATE SET root_path = excluded.root_path;
+            INSERT INTO clip_roots(root_id, root_path, root_name)
+            VALUES($rootId, $rootPath, $rootName)
+            ON CONFLICT(root_id) DO UPDATE SET
+                root_path = excluded.root_path,
+                root_name = excluded.root_name;
             """;
         cmd.Parameters.AddWithValue("$rootId", rootId);
         cmd.Parameters.AddWithValue("$rootPath", fullPath);
+        cmd.Parameters.AddWithValue("$rootName", rootName);
         cmd.ExecuteNonQuery();
         return rootId;
     }
@@ -154,7 +163,7 @@ public sealed class ReefCamsRepository
     {
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT root_id, root_path FROM clip_roots ORDER BY root_path;";
+        cmd.CommandText = "SELECT root_id, root_path FROM clip_roots ORDER BY root_name, root_path;";
         using var reader = cmd.ExecuteReader();
         var roots = new List<ClipRoot>();
         while (reader.Read())
@@ -168,6 +177,39 @@ public sealed class ReefCamsRepository
         }
 
         return roots;
+    }
+
+    public HashSet<string> GetExistingClipPathsForRoot(string rootId)
+    {
+        using var conn = OpenConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT clip_path
+            FROM clips
+            WHERE IFNULL(root_id, '') = $rootId;
+            """;
+        cmd.Parameters.AddWithValue("$rootId", rootId);
+
+        using var reader = cmd.ExecuteReader();
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (reader.Read())
+        {
+            if (reader.IsDBNull(0))
+            {
+                continue;
+            }
+
+            var raw = reader.GetString(0);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            paths.Add(Path.GetFullPath(raw));
+        }
+
+        return paths;
     }
 
     public void UpsertIndexedClip(IndexedClip clip)
@@ -246,7 +288,7 @@ public sealed class ReefCamsRepository
         tx.Commit();
     }
 
-    public IReadOnlyList<HierarchyNode> GetHierarchy()
+    public IReadOnlyList<HierarchyNode> GetHierarchy(double minConfidence = 0.4)
     {
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
@@ -255,11 +297,13 @@ public sealed class ReefCamsRepository
             SELECT
                 c.root_id,
                 IFNULL(r.root_path, ''),
+                IFNULL(r.root_name, ''),
                 IFNULL(c.site, ''),
                 IFNULL(c.dcim, ''),
                 IFNULL(c.session, ''),
                 IFNULL(c.processed, 0),
-                IFNULL(c.completed, 0)
+                IFNULL(c.completed, 0),
+                IFNULL(c.max_conf, 0)
             FROM clips c
             LEFT JOIN clip_roots r ON r.root_id = c.root_id;
             """;
@@ -277,41 +321,43 @@ public sealed class ReefCamsRepository
             }
 
             var rootPath = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
-            var site = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
-            var dcim = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
-            var session = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
-            var processed = reader.GetInt32(5) == 1;
-            var completed = reader.GetInt32(6) == 1;
-
-            if (!roots.TryGetValue(rootId, out var rootNode))
+            var rootName = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+            if (string.IsNullOrWhiteSpace(rootName))
             {
-                var rootName = Path.GetFileName(rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-                if (string.IsNullOrWhiteSpace(rootName))
-                {
-                    rootName = string.IsNullOrWhiteSpace(rootPath) ? "(root)" : rootPath;
-                }
-
-                rootNode = new HierarchyNode
-                {
-                    NodeId = $"root:{rootId}",
-                    NodeType = TreeNodeType.Root,
-                    Name = rootName,
-                    Scope = new ScopeFilter(TreeNodeType.Root, rootId)
-                };
-                roots[rootId] = rootNode;
+                rootName = GetRootDisplayName(rootPath);
             }
 
-            var siteNode = EnsureChild(rootNode, TreeNodeType.Site, site, new ScopeFilter(TreeNodeType.Site, rootId, site));
-            var dcimNode = EnsureChild(siteNode, TreeNodeType.Dcim, dcim, new ScopeFilter(TreeNodeType.Dcim, rootId, site, dcim));
-            var sessionNode = EnsureChild(dcimNode, TreeNodeType.Session, session, new ScopeFilter(TreeNodeType.Session, rootId, site, dcim, session));
+            var groupedRootId = ToRootGroupId(rootName);
+            var site = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+            var dcim = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+            var session = reader.IsDBNull(5) ? string.Empty : reader.GetString(5);
+            var processed = reader.GetInt32(6) == 1;
+            var completed = reader.GetInt32(7) == 1;
+            var maxConf = reader.GetDouble(8);
+
+            if (!roots.TryGetValue(groupedRootId, out var rootNode))
+            {
+                rootNode = new HierarchyNode
+                {
+                    NodeId = $"root:{groupedRootId}",
+                    NodeType = TreeNodeType.Root,
+                    Name = rootName,
+                    Scope = new ScopeFilter(TreeNodeType.Root, groupedRootId)
+                };
+                roots[groupedRootId] = rootNode;
+            }
+
+            var siteNode = EnsureChild(rootNode, TreeNodeType.Site, site, new ScopeFilter(TreeNodeType.Site, groupedRootId, site));
+            var dcimNode = EnsureChild(siteNode, TreeNodeType.Dcim, dcim, new ScopeFilter(TreeNodeType.Dcim, groupedRootId, site, dcim));
+            var sessionNode = EnsureChild(dcimNode, TreeNodeType.Session, session, new ScopeFilter(TreeNodeType.Session, groupedRootId, site, dcim, session));
 
             var sessionScopeId = ScopeIds.Session(rootId, site, dcim, session);
-            sessionNode.HasBoundary = boundaries.Contains(sessionScopeId);
+            sessionNode.HasBoundary = sessionNode.HasBoundary || boundaries.Contains(sessionScopeId);
 
-            IncrementMetrics(rootNode, processed, completed);
-            IncrementMetrics(siteNode, processed, completed);
-            IncrementMetrics(dcimNode, processed, completed);
-            IncrementMetrics(sessionNode, processed, completed);
+            IncrementMetrics(rootNode, processed, completed, maxConf, minConfidence);
+            IncrementMetrics(siteNode, processed, completed, maxConf, minConfidence);
+            IncrementMetrics(dcimNode, processed, completed, maxConf, minConfidence);
+            IncrementMetrics(sessionNode, processed, completed, maxConf, minConfidence);
         }
 
         foreach (var root in roots.Values)
@@ -453,7 +499,7 @@ public sealed class ReefCamsRepository
         return merged;
     }
 
-    public IReadOnlyList<ClipTimelineItem> GetTimeline(ScopeFilter scope, RankThresholds thresholds)
+    public IReadOnlyList<ClipTimelineItem> GetTimeline(ScopeFilter scope)
     {
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
@@ -481,7 +527,6 @@ public sealed class ReefCamsRepository
             var createdRaw = reader.GetString(7);
             var created = TryParseUtc(createdRaw);
             var maxConf = reader.GetDouble(10);
-            var rank = Ranker.Classify(maxConf, thresholds);
             rows.Add(
                 new ClipTimelineItem
                 {
@@ -496,8 +541,7 @@ public sealed class ReefCamsRepository
                     Processed = reader.GetInt32(8) == 1,
                     Completed = reader.GetInt32(9) == 1,
                     MaxConf = maxConf,
-                    MaxConfTimeSec = reader.IsDBNull(11) ? null : reader.GetDouble(11),
-                    Rank = rank
+                    MaxConfTimeSec = reader.IsDBNull(11) ? null : reader.GetDouble(11)
                 });
         }
 
@@ -518,9 +562,9 @@ public sealed class ReefCamsRepository
         return rows;
     }
 
-    public IReadOnlyList<ClipTimelineItem> GetClipsToProcess(ScopeFilter scope, RankThresholds thresholds)
+    public IReadOnlyList<ClipTimelineItem> GetClipsToProcess(ScopeFilter scope)
     {
-        return GetTimeline(scope, thresholds)
+        return GetTimeline(scope)
             .Where(x => !x.Processed && !x.Completed)
             .ToList();
     }
@@ -795,9 +839,9 @@ public sealed class ReefCamsRepository
         cmd.ExecuteNonQuery();
     }
 
-    public IReadOnlyList<ClipTimelineItem> GetExportCandidates(ScopeFilter scope, RankThresholds thresholds, double minConfidence)
+    public IReadOnlyList<ClipTimelineItem> GetExportCandidates(ScopeFilter scope, double minConfidence)
     {
-        return GetTimeline(scope, thresholds)
+        return GetTimeline(scope)
             .Where(x => x.Processed && !x.Completed && x.MaxConf >= minConfidence)
             .ToList();
     }
@@ -879,12 +923,21 @@ public sealed class ReefCamsRepository
         return set;
     }
 
-    private static void IncrementMetrics(HierarchyNode node, bool processed, bool completed)
+    private static void IncrementMetrics(HierarchyNode node, bool processed, bool completed, double maxConf, double minConfidence)
     {
+        node.ConfidenceThreshold = minConfidence;
         node.TotalCount++;
         if (processed)
         {
             node.ProcessedCount++;
+            if (maxConf >= minConfidence)
+            {
+                node.PositiveCount++;
+            }
+            else
+            {
+                node.NegativeCount++;
+            }
         }
 
         if (completed)
@@ -929,8 +982,18 @@ public sealed class ReefCamsRepository
 
     private static string BuildScopeWhere(ScopeFilter scope, SqliteCommand cmd)
     {
-        var clauses = new List<string> { "IFNULL(root_id, '') = $rootId" };
-        cmd.Parameters.AddWithValue("$rootId", scope.RootId);
+        var clauses = new List<string>();
+        if (IsRootGroupId(scope.RootId))
+        {
+            clauses.Add(
+                "IFNULL(root_id, '') IN (SELECT root_id FROM clip_roots WHERE lower(IFNULL(root_name, '')) = $rootGroupName)");
+            cmd.Parameters.AddWithValue("$rootGroupName", ParseRootGroupName(scope.RootId));
+        }
+        else
+        {
+            clauses.Add("IFNULL(root_id, '') = $rootId");
+            cmd.Parameters.AddWithValue("$rootId", scope.RootId);
+        }
 
         if (scope.Type is TreeNodeType.Site or TreeNodeType.Dcim or TreeNodeType.Session)
         {
@@ -951,6 +1014,76 @@ public sealed class ReefCamsRepository
         }
 
         return "WHERE " + string.Join(" AND ", clauses);
+    }
+
+    private static string ToRootGroupId(string rootName)
+    {
+        var normalized = NormalizeRootName(rootName);
+        return RootGroupPrefix + normalized;
+    }
+
+    private static bool IsRootGroupId(string rootId)
+    {
+        return rootId.StartsWith(RootGroupPrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ParseRootGroupName(string rootId)
+    {
+        return rootId[RootGroupPrefix.Length..];
+    }
+
+    private static string NormalizeRootName(string rootName)
+    {
+        return rootName.Trim().ToLowerInvariant();
+    }
+
+    private static string GetRootDisplayName(string rootPath)
+    {
+        var name = Path.GetFileName(rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            return name;
+        }
+
+        return string.IsNullOrWhiteSpace(rootPath) ? "(root)" : rootPath;
+    }
+
+    private static void BackfillClipRootNames(SqliteConnection conn)
+    {
+        using var select = conn.CreateCommand();
+        select.CommandText = "SELECT root_id, root_path, IFNULL(root_name, '') FROM clip_roots;";
+
+        var rows = new List<(string RootId, string RootPath, string RootName)>();
+        using (var reader = select.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                var rootId = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                var rootPath = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                var rootName = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                if (string.IsNullOrWhiteSpace(rootId) || string.IsNullOrWhiteSpace(rootPath))
+                {
+                    continue;
+                }
+
+                rows.Add((rootId, rootPath, rootName));
+            }
+        }
+
+        foreach (var row in rows)
+        {
+            var computed = GetRootDisplayName(row.RootPath);
+            if (string.Equals(row.RootName, computed, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            using var update = conn.CreateCommand();
+            update.CommandText = "UPDATE clip_roots SET root_name = $rootName WHERE root_id = $rootId;";
+            update.Parameters.AddWithValue("$rootName", computed);
+            update.Parameters.AddWithValue("$rootId", row.RootId);
+            update.ExecuteNonQuery();
+        }
     }
 
     private SqliteConnection OpenConnection(string? dbPath = null)

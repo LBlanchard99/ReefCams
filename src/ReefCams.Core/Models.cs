@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace ReefCams.Core;
 
 public enum TreeNodeType
@@ -35,10 +37,14 @@ public sealed class HierarchyNode
     public int CompletedCount { get; set; }
     public int ProcessedCount { get; set; }
     public int RemainingToProcessCount { get; set; }
+    public int PositiveCount { get; set; }
+    public int NegativeCount { get; set; }
+    public double ConfidenceThreshold { get; set; } = 0.4;
     public List<HierarchyNode> Children { get; } = [];
     public int RemainingCount => Math.Max(0, TotalCount - CompletedCount);
+    private string RemainingToProcessLabel => RemainingToProcessCount > 0 ? $", {RemainingToProcessCount} to process" : string.Empty;
     public string Label =>
-        $"{Name} ({CompletedCount}/{TotalCount} completed, {ProcessedCount}/{TotalCount} processed, {RemainingToProcessCount} to process){(HasBoundary ? " [boundary]" : string.Empty)}";
+        $"{Name} ({CompletedCount}/{TotalCount} completed, {ProcessedCount}/{TotalCount} processed{RemainingToProcessLabel}, {PositiveCount} positive, {NegativeCount} negative @ conf>={ConfidenceThreshold.ToString("0.###", CultureInfo.InvariantCulture)}){(HasBoundary ? " [boundary]" : string.Empty)}";
 }
 
 public sealed class IndexedClip
@@ -70,8 +76,6 @@ public sealed class ClipTimelineItem
     public double MaxConf { get; init; }
     public double? MaxConfTimeSec { get; init; }
     public double? DeltaFromPreviousSec { get; set; }
-    public RankBucket Rank { get; init; }
-    public string RankLabel => Processed ? Ranker.DisplayName(Rank) : "Unprocessed";
 }
 
 public sealed class FrameMarker

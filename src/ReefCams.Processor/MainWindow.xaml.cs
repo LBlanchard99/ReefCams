@@ -25,11 +25,19 @@ namespace ReefCams.Processor;
 
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
+    private const string RootGroupPrefix = "@group:";
     private const double BoundaryDragMinSpacingNorm = 0.003;
+    private const double TimelineTextColumnExtraWidthPx = 5.0;
+    private const double DetectionBoxPaddingPx = 4.0;
     private readonly ConfigService _configService = new();
     private readonly DispatcherTimer _playbackTimer;
     private readonly EngineRunner _engineRunner = new();
     private readonly Dictionary<string, List<ClipTimelineItem>> _hiddenGapGroups = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _rootDisplayNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _rootPathById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> _rootPresenceById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> _clipPresenceCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> _scopePresenceByScopeKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Point> _boundaryPoints = [];
     private readonly List<Point> _draftBoundaryPoints = [];
     private readonly List<int> _draftBoundaryStrokeSizes = [];
@@ -57,6 +65,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isViewerMode;
     private bool _isBulkCompletionMode;
     private bool _isPlayerPlaying;
+    private bool _isRebuildingTimeline;
     private int _seekRenderVersion;
     private CancellationTokenSource? _operationCts;
     private readonly HashSet<string> _processingScopeKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -70,21 +79,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string _projectTreeHeaderText = "Project Tree (select node then Add Selected Scope)";
     private string _timelineScopeText = "Timeline scope: - - -";
     private string _scopeSelectionSummary = "Processing scope list: 0 checked";
-    private RankBucket _selectedMinRank = RankBucket.Medium;
-    private bool _hideBelowRank = true;
+    private string _overlayConfidenceText = "0.100";
+    private double _minVisibleConfidence = 0.4;
+    private string _minVisibleConfidenceText = "0.400000";
+    private bool _hideBelowConfidence = true;
+    private bool _hideCompletedClips = true;
+    private bool _hideMissingClips = true;
 
     public MainWindow()
     {
         InitializeComponent();
         DataContext = this;
 
-        RankOptions = new ObservableCollection<RankBucket>(
-            Enum.GetValues<RankBucket>().OrderByDescending(x => x));
-
         _playbackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         _playbackTimer.Tick += PlaybackTimerOnTick;
         _playbackTimer.Start();
         SetPlayerPlaying(false);
+        OverlayConfidenceText = ConfSlider.Value.ToString("0.000", CultureInfo.InvariantCulture);
         UpdateBoundaryEditControls();
         UpdateCompletionToggleButtonState();
         UpdateScopeSelectionSummary();
@@ -95,7 +106,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public ObservableCollection<HierarchyNode> HierarchyNodes { get; } = [];
     public ObservableCollection<TimelineDisplayRow> TimelineRows { get; } = [];
-    public ObservableCollection<RankBucket> RankOptions { get; }
     public ObservableCollection<ProcessingScopeOption> ProcessingScopes { get; } = [];
     public ObservableCollection<ProcessingScopeOption> CompletionScopes { get; } = [];
 
@@ -156,6 +166,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         private set => SetField(ref _scopeSelectionSummary, value);
     }
 
+    public string OverlayConfidenceText
+    {
+        get => _overlayConfidenceText;
+        private set => SetField(ref _overlayConfidenceText, value);
+    }
+
     public bool IsBusy
     {
         get => _isBusy;
@@ -168,16 +184,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         private set => SetField(ref _isProgressIndeterminate, value);
     }
 
-    public RankBucket SelectedMinRank
+    public double MinVisibleConfidence
     {
-        get => _selectedMinRank;
-        set => SetField(ref _selectedMinRank, value);
+        get => _minVisibleConfidence;
+        private set => SetField(ref _minVisibleConfidence, value);
     }
 
-    public bool HideBelowRank
+    public string MinVisibleConfidenceText
     {
-        get => _hideBelowRank;
-        set => SetField(ref _hideBelowRank, value);
+        get => _minVisibleConfidenceText;
+        set => SetField(ref _minVisibleConfidenceText, value);
+    }
+
+    public bool HideBelowConfidence
+    {
+        get => _hideBelowConfidence;
+        set => SetField(ref _hideBelowConfidence, value);
+    }
+
+    public bool HideCompletedClips
+    {
+        get => _hideCompletedClips;
+        set => SetField(ref _hideCompletedClips, value);
+    }
+
+    public bool HideMissingClips
+    {
+        get => _hideMissingClips;
+        set => SetField(ref _hideMissingClips, value);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -267,6 +301,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 LoadTimelineForNode(_selectedNode);
             }
+            UpdateScopeSelectionSummary();
         }
         catch (OperationCanceledException)
         {
@@ -336,6 +371,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 LoadTimelineForNode(_selectedNode);
             }
+            UpdateScopeSelectionSummary();
         }
         catch (OperationCanceledException)
         {
@@ -384,8 +420,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var candidates = new List<ClipTimelineItem>();
         foreach (var option in scopeOptions)
         {
-            foreach (var clip in _repository.GetClipsToProcess(option.Scope, _config.RankThresholds))
+            foreach (var clip in _repository.GetClipsToProcess(option.Scope))
             {
+                if (!IsClipCurrentlyPresent(clip))
+                {
+                    continue;
+                }
+
                 if (candidateMap.TryAdd(clip.ClipId, clip))
                 {
                     candidates.Add(clip);
@@ -430,16 +471,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 index++;
                 StatusText = $"Processing {index}/{candidates.Count}: {clip.ClipName}";
                 var progress = new Progress<string>(line => HandleEngineProgressLine(line, index, candidates.Count));
+                var resolvedClipPath = ResolveClipPathForCurrentProject(clip.ClipPath);
                 await _engineRunner.RunProcessClipAsync(
                     enginePath,
                     _projectPaths.DbPath,
-                    clip.ClipPath,
+                    resolvedClipPath,
                     _config.Processing,
                     progress,
                     token);
 
                 // Engine and indexer can disagree on clip_id for some mtimes; merge any path-level duplicates immediately.
-                _repository.MergeDuplicateClipsByPath(clip.ClipPath);
+                _repository.MergeDuplicateClipsByPath(resolvedClipPath);
 
                 ProcessingProgressBar.Value = index;
                 OperationProgressText = $"{index}/{candidates.Count}";
@@ -450,6 +492,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 {
                     LoadTimelineForNode(_selectedNode);
                 }
+                UpdateScopeSelectionSummary();
             }
 
             StatusText = $"Processing complete: {candidates.Count} clips";
@@ -459,6 +502,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 LoadTimelineForNode(_selectedNode);
             }
+            UpdateScopeSelectionSummary();
         }
         catch (OperationCanceledException)
         {
@@ -498,10 +542,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        var clipPath = _selectedClip?.ClipPath ?? _timelineAll.FirstOrDefault()?.ClipPath;
+        var clipPath = ResolveBenchmarkClipPath();
         if (string.IsNullOrWhiteSpace(clipPath))
         {
-            MessageBox.Show(this, "Select a clip or scope with clips first.", "ReefCams");
+            MessageBox.Show(this, "No indexed clips found. Add a clip root and index clips first.", "ReefCams");
             return;
         }
 
@@ -649,7 +693,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         var destination = Path.Combine(dialog.SelectedPath, $"ReefCamsExport_{DateTime.Now:yyyyMMdd_HHmmss}");
-        var minConf = Ranker.LowerBound(SelectedMinRank, _config.RankThresholds);
+        var minConf = MinVisibleConfidence;
         var request = new ExportRequest
         {
             Scope = _selectedNode.Scope,
@@ -665,7 +709,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var token = BeginOperation("export");
             IsProgressIndeterminate = false;
             ProcessingProgressBar.Minimum = 0;
-            var totalToExport = Math.Max(1, _repository.GetExportCandidates(request.Scope, _config.RankThresholds, request.MinimumConfidence).Count);
+            var totalToExport = Math.Max(1, _repository.GetExportCandidates(request.Scope, request.MinimumConfidence).Count);
             ProcessingProgressBar.Maximum = totalToExport;
             ProcessingProgressBar.Value = 0;
             OperationProgressText = $"0/{totalToExport}";
@@ -780,24 +824,67 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void TimelineDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_isRebuildingTimeline)
+        {
+            return;
+        }
+
         if (TimelineDataGrid.SelectedItem is not TimelineDisplayRow row || row.IsGapRow || row.Clip is null)
         {
-            _selectedClip = null;
-            SetPlayerPlaying(false);
-            UpdateSelectedClipInfo(null);
             return;
         }
 
         LoadClip(row.Clip);
     }
 
-    private void MinRank_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void MinVisibleConfidenceTextBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        TryApplyMinVisibleConfidenceFromText(showError: true);
+    }
+
+    private void MinVisibleConfidenceTextBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Enter or Key.Return))
+        {
+            return;
+        }
+
+        if (TryApplyMinVisibleConfidenceFromText(showError: true))
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void HideBelowConfidence_Changed(object sender, RoutedEventArgs e)
     {
         RebuildTimelineRows();
     }
 
-    private void HideBelowRank_Changed(object sender, RoutedEventArgs e)
+    private void HideCompletedClips_Changed(object sender, RoutedEventArgs e)
     {
+        _config.Timeline.HideCompletedClips = HideCompletedClips;
+        SaveConfig();
+        LoadHierarchy();
+        UpdateScopeSelectionSummary();
+        RebuildTimelineRows();
+    }
+
+    private void HideMissingClips_Changed(object sender, RoutedEventArgs e)
+    {
+        _config.Timeline.HideMissingClips = HideMissingClips;
+        SaveConfig();
+        LoadHierarchy();
+        UpdateScopeSelectionSummary();
+        if (_selectedNode is not null)
+        {
+            LoadTimelineForNode(_selectedNode);
+            return;
+        }
+
+        _timelineAll = [];
+        _selectedClip = null;
+        SetPlayerPlaying(false);
+        UpdateSelectedClipInfo(null);
         RebuildTimelineRows();
     }
 
@@ -864,6 +951,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 {
                     Scope = scope,
                     ScopeKey = scopeKey,
+                    BaseLabel = BuildScopeLabel(_selectedNode),
                     DisplayLabel = BuildScopeLabel(_selectedNode),
                     IsChecked = true
                 });
@@ -885,6 +973,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 Scope = scope,
                 ScopeKey = completionScopeKey,
+                BaseLabel = BuildScopeLabel(_selectedNode),
                 DisplayLabel = BuildScopeLabel(_selectedNode),
                 IsChecked = true
             });
@@ -924,6 +1013,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 Scope = sessionScope,
                 ScopeKey = scopeKey,
+                BaseLabel = $"Session: {sessionScope.Site}/{sessionScope.Dcim}/{sessionScope.Session} (up to {_selectedClip.ClipName})",
                 DisplayLabel = $"Session: {sessionScope.Site}/{sessionScope.Dcim}/{sessionScope.Session} (up to {_selectedClip.ClipName})",
                 IsChecked = true,
                 SelectionMode = ScopeSelectionMode.UpToClip,
@@ -984,6 +1074,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _hiddenGapGroups.Remove(groupId);
+        QueueTimelineTextColumnWidthRefresh();
+    }
+
+    private void MoveTimelineSelection(int direction)
+    {
+        var clipRows = TimelineRows.Where(x => !x.IsGapRow && x.Clip is not null).ToList();
+        if (clipRows.Count == 0)
+        {
+            return;
+        }
+
+        var currentRow = TimelineDataGrid.SelectedItem as TimelineDisplayRow;
+        var currentIndex = currentRow is null
+            ? clipRows.FindIndex(x => x.Clip?.ClipId.Equals(_selectedClip?.ClipId, StringComparison.OrdinalIgnoreCase) == true)
+            : clipRows.FindIndex(x => x.Clip?.ClipId.Equals(currentRow.Clip?.ClipId, StringComparison.OrdinalIgnoreCase) == true);
+        if (currentIndex < 0)
+        {
+            currentIndex = direction > 0 ? -1 : clipRows.Count;
+        }
+
+        var nextIndex = Math.Clamp(currentIndex + direction, 0, clipRows.Count - 1);
+        if (nextIndex == currentIndex)
+        {
+            return;
+        }
+
+        var row = clipRows[nextIndex];
+        TimelineDataGrid.SelectedItem = row;
+        TimelineDataGrid.ScrollIntoView(row);
     }
 
     private void PlayPause_Click(object sender, RoutedEventArgs e)
@@ -1020,23 +1139,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        if (_selectedClip is null)
-        {
-            return;
-        }
-
-        if (e.Key is not (Key.Space or Key.Enter))
-        {
-            return;
-        }
-
         if (e.OriginalSource is System.Windows.Controls.Primitives.TextBoxBase or System.Windows.Controls.ComboBox)
         {
             return;
         }
 
-        TogglePlayback();
-        e.Handled = true;
+        if (_selectedClip is not null && e.Key is (Key.Space or Key.Enter))
+        {
+            TogglePlayback();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Down)
+        {
+            MoveTimelineSelection(+1);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Up)
+        {
+            MoveTimelineSelection(-1);
+            e.Handled = true;
+        }
     }
 
     private void SeekSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -1060,6 +1186,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void OverlaySettings_Changed(object sender, RoutedEventArgs e)
     {
+        OverlayConfidenceText = ConfSlider.Value.ToString("0.000", CultureInfo.InvariantCulture);
         RenderOverlay();
     }
 
@@ -1306,6 +1433,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var merged = _repository.MergeDuplicateClipsByPath();
         _indexer = new ClipIndexer(_repository);
         _config = _configService.LoadOrCreate(_projectPaths);
+        MinVisibleConfidence = NormalizeMinVisibleConfidence(_config.Timeline.MinVisibleConfidence);
+        MinVisibleConfidenceText = FormatConfidence(MinVisibleConfidence);
+        HideCompletedClips = _config.Timeline.HideCompletedClips;
+        HideMissingClips = _config.Timeline.HideMissingClips;
 
         ProjectDirDisplay = _projectPaths.RootDirectory;
         var notes = new List<string>();
@@ -1341,6 +1472,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         UpdateSelectedClipInfo(null);
         LoadHierarchy(preserveUiState: false);
         TimelineRows.Clear();
+        SaveConfig();
         SaveUiState(_projectPaths.RootDirectory);
     }
 
@@ -1351,13 +1483,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        RefreshRootDisplayNames();
         var expandedScopeKeys = preserveUiState
             ? CaptureExpandedScopeKeys(HierarchyNodes)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var selectedScope = preserveUiState ? _selectedTreeScope : null;
 
+        var roots = _repository.GetHierarchy(MinVisibleConfidence).ToList();
+        if (HideMissingClips)
+        {
+            roots = FilterHierarchyToPresentClips(roots);
+        }
+
         HierarchyNodes.Clear();
-        foreach (var root in _repository.GetHierarchy())
+        foreach (var root in roots)
         {
             HierarchyNodes.Add(root);
         }
@@ -1373,6 +1512,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void RefreshRootDisplayNames()
+    {
+        _rootDisplayNames.Clear();
+        _rootPathById.Clear();
+        _rootPresenceById.Clear();
+        _clipPresenceCache.Clear();
+        _scopePresenceByScopeKey.Clear();
+        if (_repository is null)
+        {
+            return;
+        }
+
+        foreach (var root in _repository.GetClipRoots())
+        {
+            _rootDisplayNames[root.RootId] = root.DisplayName;
+            _rootPathById[root.RootId] = root.RootPath;
+            _rootPresenceById[root.RootId] = Directory.Exists(root.RootPath);
+        }
+    }
+
     private void LoadTimelineForNode(HierarchyNode node)
     {
         if (_repository is null)
@@ -1380,8 +1539,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        _selectedClip = null;
-        SetPlayerPlaying(false);
+        var selectedClipId = _selectedClip?.ClipId;
         if (_boundaryEditMode)
         {
             _boundaryEditMode = false;
@@ -1390,53 +1548,135 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ResetBoundaryDragState();
             UpdateBoundaryEditControls();
         }
-        UpdateSelectedClipInfo(null);
+
+        if (node.Scope.Type == TreeNodeType.Root)
+        {
+            _timelineAll = [];
+            _isRebuildingTimeline = true;
+            try
+            {
+                TimelineRows.Clear();
+                TimelineDataGrid.SelectedItem = null;
+            }
+            finally
+            {
+                _isRebuildingTimeline = false;
+            }
+
+            _selectedClip = null;
+            SetPlayerPlaying(false);
+            UpdateSelectedClipInfo(null);
+            TimelineScopeText = "Timeline scope: select a site";
+            StatusText = "Select a site to view timeline clips.";
+            QueueTimelineTextColumnWidthRefresh();
+            return;
+        }
+
         TimelineScopeText = BuildTimelineScopeText(node.Scope);
-        _timelineAll = _repository.GetTimeline(node.Scope, _config.RankThresholds).ToList();
+        _timelineAll = ApplyPresenceFilter(_repository.GetTimeline(node.Scope));
         RebuildTimelineRows();
+        if (!TrySelectTimelineClipById(selectedClipId))
+        {
+            _selectedClip = null;
+            SetPlayerPlaying(false);
+            UpdateSelectedClipInfo(null);
+        }
+
         StatusText = $"{_timelineAll.Count} clips in selected scope";
     }
 
     private void RebuildTimelineRows()
     {
-        TimelineRows.Clear();
-        _hiddenGapGroups.Clear();
-
-        if (_timelineAll.Count == 0)
+        var selectedClipId = _selectedClip?.ClipId;
+        _isRebuildingTimeline = true;
+        try
         {
-            return;
-        }
+            TimelineRows.Clear();
+            _hiddenGapGroups.Clear();
 
-        if (!HideBelowRank)
-        {
+            if (_timelineAll.Count == 0)
+            {
+                TimelineDataGrid.SelectedItem = null;
+                QueueTimelineTextColumnWidthRefresh();
+                return;
+            }
+
+            if (!HideBelowConfidence && !HideCompletedClips && !HideMissingClips)
+            {
+                foreach (var clip in _timelineAll)
+                {
+                    TimelineRows.Add(CreateTimelineRow(clip, isGapRow: false, notes: string.Empty));
+                }
+
+                QueueTimelineTextColumnWidthRefresh();
+                return;
+            }
+
+            var hidden = new List<ClipTimelineItem>();
             foreach (var clip in _timelineAll)
             {
-                TimelineRows.Add(CreateTimelineRow(clip, isGapRow: false, notes: string.Empty));
-            }
-            return;
-        }
+                if (ShouldHideTimelineClip(clip))
+                {
+                    hidden.Add(clip);
+                    continue;
+                }
 
-        var hidden = new List<ClipTimelineItem>();
-        foreach (var clip in _timelineAll)
-        {
-            if (clip.Processed && clip.Rank < SelectedMinRank)
-            {
-                hidden.Add(clip);
-                continue;
+                if (hidden.Count > 0)
+                {
+                    AddGapRow(hidden, clip);
+                    hidden = [];
+                }
+
+                TimelineRows.Add(CreateTimelineRow(clip, isGapRow: false, notes: string.Empty));
             }
 
             if (hidden.Count > 0)
             {
-                AddGapRow(hidden, clip);
-                hidden = [];
+                AddGapRow(hidden, nextVisibleClip: null);
             }
 
-            TimelineRows.Add(CreateTimelineRow(clip, isGapRow: false, notes: string.Empty));
+            QueueTimelineTextColumnWidthRefresh();
+        }
+        finally
+        {
+            _isRebuildingTimeline = false;
         }
 
-        if (hidden.Count > 0)
+        if (!TrySelectTimelineClipById(selectedClipId))
         {
-            AddGapRow(hidden, nextVisibleClip: null);
+            TimelineDataGrid.SelectedItem = null;
+        }
+    }
+
+    private void QueueTimelineTextColumnWidthRefresh()
+    {
+        Dispatcher.BeginInvoke(new Action(ApplyTimelineTextColumnWidthPadding), DispatcherPriority.Loaded);
+    }
+
+    private void ApplyTimelineTextColumnWidthPadding()
+    {
+        var columns = new DataGridColumn?[] { ClipColumn, TimestampColumn, ConfColumn, DeltaColumn };
+        foreach (var column in columns)
+        {
+            if (column is null)
+            {
+                continue;
+            }
+
+            column.Width = new DataGridLength(1, DataGridLengthUnitType.SizeToCells);
+        }
+
+        TimelineDataGrid.UpdateLayout();
+
+        foreach (var column in columns)
+        {
+            if (column is null)
+            {
+                continue;
+            }
+
+            var measured = Math.Max(column.ActualWidth, column.MinWidth);
+            column.Width = new DataGridLength(measured + TimelineTextColumnExtraWidthPx);
         }
     }
 
@@ -1459,17 +1699,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             spanSec = Math.Max(0, (validTimes[^1].CreatedAtUtc - validTimes[0].CreatedAtUtc).TotalSeconds);
         }
 
-        var summary = $"{hidden.Count} clips below {Ranker.DisplayName(SelectedMinRank)} - span {FormatDelta(spanSec)}";
+        var summary = BuildHiddenGapSummary(hidden, spanSec);
 
         TimelineRows.Add(
             new TimelineDisplayRow
             {
                 IsGapRow = true,
                 GapGroupId = groupId,
-                ClipName = summary,
-                RankLabel = "-",
+                GapSummary = summary,
+                ClipName = string.Empty,
+                CreatedText = string.Empty,
                 MaxConfText = "-",
-                DeltaText = "-",
+                DeltaText = string.Empty,
                 Notes = string.Empty
             });
     }
@@ -1480,15 +1721,99 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             IsGapRow = isGapRow,
             Clip = clip,
-            CreatedText = clip.CreatedAtUtc == DateTimeOffset.MinValue ? "-" : clip.CreatedAtUtc.ToString("u"),
+            CreatedText = clip.CreatedAtUtc == DateTimeOffset.MinValue
+                ? "-"
+                : clip.CreatedAtUtc.UtcDateTime.ToString("MM/dd/yy HH:mm:ss", CultureInfo.InvariantCulture),
+            GapSummary = string.Empty,
             ClipName = clip.ClipName,
-            RankLabel = clip.RankLabel,
-            MaxConfText = clip.MaxConf.ToString("0.000", CultureInfo.InvariantCulture),
+            MaxConfText = clip.Processed ? clip.MaxConf.ToString("0.000", CultureInfo.InvariantCulture) : "-",
             Processed = clip.Processed,
             Completed = clip.Completed,
             DeltaText = clip.DeltaFromPreviousSec.HasValue ? FormatDelta(clip.DeltaFromPreviousSec.Value) : "-",
             Notes = notes
         };
+    }
+
+    private bool ShouldHideTimelineClip(ClipTimelineItem clip)
+    {
+        if (HideMissingClips && !IsClipCurrentlyPresent(clip))
+        {
+            return true;
+        }
+
+        if (HideCompletedClips && clip.Completed)
+        {
+            return true;
+        }
+
+        if (HideBelowConfidence && clip.Processed && clip.MaxConf < MinVisibleConfidence)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private string BuildHiddenGapSummary(IReadOnlyCollection<ClipTimelineItem> hidden, double spanSec)
+    {
+        var hiddenMissing = hidden.Count(x => !IsClipCurrentlyPresent(x));
+        var hiddenCompleted = hidden.Count(x => x.Completed);
+        var hiddenBelowConfidence = hidden.Count(x => x.Processed && x.MaxConf < MinVisibleConfidence);
+
+        if (HideMissingClips && hiddenMissing > 0)
+        {
+            var extra = string.Empty;
+            if (HideCompletedClips && hiddenCompleted > 0)
+            {
+                extra = $", {hiddenCompleted} completed";
+            }
+            else if (HideBelowConfidence && hiddenBelowConfidence > 0)
+            {
+                extra = $", {hiddenBelowConfidence} below {FormatConfidence(MinVisibleConfidence)}";
+            }
+
+            return $"{hiddenMissing} missing clips hidden{extra} - span {FormatDelta(spanSec)}";
+        }
+
+        if (HideBelowConfidence && HideCompletedClips)
+        {
+            if (hiddenCompleted > 0 && hiddenBelowConfidence > 0)
+            {
+                return $"{hidden.Count} hidden clips (below {FormatConfidence(MinVisibleConfidence)} confidence and/or completed) - span {FormatDelta(spanSec)}";
+            }
+
+            if (hiddenCompleted > 0)
+            {
+                return $"{hiddenCompleted} completed clips hidden - span {FormatDelta(spanSec)}";
+            }
+
+            return $"{hiddenBelowConfidence} clips below {FormatConfidence(MinVisibleConfidence)} confidence - span {FormatDelta(spanSec)}";
+        }
+
+        if (HideCompletedClips)
+        {
+            return $"{hiddenCompleted} completed clips hidden - span {FormatDelta(spanSec)}";
+        }
+
+        return $"{hiddenBelowConfidence} clips below {FormatConfidence(MinVisibleConfidence)} confidence - span {FormatDelta(spanSec)}";
+    }
+
+    private bool TrySelectTimelineClipById(string? clipId)
+    {
+        if (string.IsNullOrWhiteSpace(clipId))
+        {
+            return false;
+        }
+
+        var row = TimelineRows.FirstOrDefault(x => !x.IsGapRow && x.Clip?.ClipId.Equals(clipId, StringComparison.OrdinalIgnoreCase) == true);
+        if (row is null)
+        {
+            return false;
+        }
+
+        TimelineDataGrid.SelectedItem = row;
+        TimelineDataGrid.ScrollIntoView(row);
+        return true;
     }
 
     private void LoadClip(ClipTimelineItem clip)
@@ -1518,8 +1843,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         ConfSlider.Value = GetDefaultOverlayThreshold(clip);
+        var resolvedClipPath = ResolveClipPathForCurrentProject(clip.ClipPath);
+        if (!File.Exists(resolvedClipPath))
+        {
+            MessageBox.Show(this, $"Clip file not found:\n{resolvedClipPath}", "ReefCams");
+            return;
+        }
+
         PlayerElement.Stop();
-        PlayerElement.Source = new Uri(clip.ClipPath);
+        PlayerElement.Source = new Uri(resolvedClipPath);
         SeekSlider.Value = 0;
         // Force a first-frame render so clip selection does not appear black before play.
         PlayerElement.Play();
@@ -1613,7 +1945,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (frame is not null && _detectionsByFrame.TryGetValue(FrameKey(frame.FrameTimeSec), out var detections))
             {
                 var minConf = ConfSlider.Value;
-                var padding = PaddingSlider.Value;
                 foreach (var det in detections)
                 {
                     if (det.Conf < minConf)
@@ -1621,10 +1952,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                         continue;
                     }
 
-                    var x = videoRect.X + (det.X * videoRect.Width) - padding;
-                    var y = videoRect.Y + (det.Y * videoRect.Height) - padding;
-                    var boxW = (det.W * videoRect.Width) + (padding * 2);
-                    var boxH = (det.H * videoRect.Height) + (padding * 2);
+                    var x = videoRect.X + (det.X * videoRect.Width) - DetectionBoxPaddingPx;
+                    var y = videoRect.Y + (det.Y * videoRect.Height) - DetectionBoxPaddingPx;
+                    var boxW = (det.W * videoRect.Width) + (DetectionBoxPaddingPx * 2);
+                    var boxH = (det.H * videoRect.Height) + (DetectionBoxPaddingPx * 2);
 
                     var rect = new Rectangle
                     {
@@ -2027,6 +2358,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void UpdateScopeSelectionSummary()
     {
+        UpdateScopeOptionDisplayLabels();
+
         if (_isBulkCompletionMode)
         {
             var checkedCount = CompletionScopes.Count(x => x.IsChecked);
@@ -2040,6 +2373,53 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         OnPropertyChanged(nameof(ActiveScopeOptions));
         UpdateTopActionButtonVisuals();
+    }
+
+    private void UpdateScopeOptionDisplayLabels()
+    {
+        UpdateScopeOptionDisplayLabels(ProcessingScopes);
+        UpdateScopeOptionDisplayLabels(CompletionScopes);
+    }
+
+    private void UpdateScopeOptionDisplayLabels(IEnumerable<ProcessingScopeOption> options)
+    {
+        if (_repository is null)
+        {
+            return;
+        }
+
+        foreach (var option in options)
+        {
+            var timeline = GetScopeTimelineForOption(option);
+            var total = timeline.Count;
+            var passing = timeline.Count(x => x.Processed && x.MaxConf >= MinVisibleConfidence);
+
+            option.TotalClipCount = total;
+            option.PassingClipCount = passing;
+            option.DisplayLabel = $"{option.BaseLabel} ({total} total, {passing} >= {FormatConfidence(MinVisibleConfidence)})";
+        }
+    }
+
+    private IReadOnlyList<ClipTimelineItem> GetScopeTimelineForOption(ProcessingScopeOption option)
+    {
+        if (_repository is null)
+        {
+            return [];
+        }
+
+        var timeline = ApplyPresenceFilter(_repository.GetTimeline(option.Scope));
+        if (option.SelectionMode != ScopeSelectionMode.UpToClip || string.IsNullOrWhiteSpace(option.UpToClipId))
+        {
+            return timeline;
+        }
+
+        var upToClip = timeline.FirstOrDefault(x => x.ClipId.Equals(option.UpToClipId, StringComparison.OrdinalIgnoreCase));
+        if (upToClip is null)
+        {
+            return [];
+        }
+
+        return timeline.Where(x => IsClipAtOrBefore(x, upToClip)).ToList();
     }
 
     private void UpdateTopActionButtonVisuals()
@@ -2175,7 +2555,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         foreach (var option in options)
         {
-            var timeline = _repository.GetTimeline(option.Scope, _config.RankThresholds).ToList();
+            var timeline = _repository.GetTimeline(option.Scope).ToList();
             if (timeline.Count == 0)
             {
                 continue;
@@ -2266,10 +2646,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        SelectedClipNameText = clip.ClipName;
+        SelectedClipNameText = BuildQualifiedClipName(clip);
         var timestamp = clip.CreatedAtUtc == DateTimeOffset.MinValue
             ? "-"
-            : clip.CreatedAtUtc.ToString("u");
+            : clip.CreatedAtUtc.UtcDateTime.ToString("MM/dd/yy HH:mm:ss", CultureInfo.InvariantCulture);
         var maxConf = clip.Processed
             ? clip.MaxConf.ToString("0.000", CultureInfo.InvariantCulture)
             : "-";
@@ -2278,10 +2658,219 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             : "-";
         var processed = clip.Processed ? "Yes" : "No";
         var completed = clip.Completed ? "Yes" : "No";
-        var rank = clip.Processed ? clip.RankLabel : "Unprocessed";
-
-        SelectedClipInfoText = $"{timestamp} | {rank} | max {maxConf} | processed {processed} | completed {completed} | delta {delta}";
+        SelectedClipInfoText = $"{timestamp} | confidence {maxConf} | processed {processed} | completed {completed} | delta {delta}";
         UpdateCompletionToggleButtonState();
+    }
+
+    private string ResolveClipPathForCurrentProject(string clipPath)
+    {
+        if (Path.IsPathRooted(clipPath))
+        {
+            return Path.GetFullPath(clipPath);
+        }
+
+        if (_projectPaths is null)
+        {
+            return Path.GetFullPath(clipPath);
+        }
+
+        return Path.GetFullPath(Path.Combine(_projectPaths.RootDirectory, clipPath));
+    }
+
+    private List<HierarchyNode> FilterHierarchyToPresentClips(IEnumerable<HierarchyNode> roots)
+    {
+        var filtered = new List<HierarchyNode>();
+        foreach (var root in roots)
+        {
+            if (!IsRootCurrentlyPresent(root.Scope.RootId))
+            {
+                continue;
+            }
+
+            if (PruneMissingHierarchyNode(root))
+            {
+                filtered.Add(root);
+            }
+        }
+
+        return filtered;
+    }
+
+    private bool PruneMissingHierarchyNode(HierarchyNode node)
+    {
+        if (node.NodeType == TreeNodeType.Session)
+        {
+            return HasAnyPresentClipInScope(node.Scope);
+        }
+
+        for (var i = node.Children.Count - 1; i >= 0; i--)
+        {
+            if (PruneMissingHierarchyNode(node.Children[i]))
+            {
+                continue;
+            }
+
+            node.Children.RemoveAt(i);
+        }
+
+        return node.Children.Count > 0;
+    }
+
+    private bool HasAnyPresentClipInScope(ScopeFilter scope)
+    {
+        if (_repository is null)
+        {
+            return false;
+        }
+
+        var key = ScopeKey(scope);
+        if (_scopePresenceByScopeKey.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        foreach (var clip in _repository.GetTimeline(scope))
+        {
+            if (!IsClipCurrentlyPresent(clip))
+            {
+                continue;
+            }
+
+            _scopePresenceByScopeKey[key] = true;
+            return true;
+        }
+
+        _scopePresenceByScopeKey[key] = false;
+        return false;
+    }
+
+    private bool IsRootCurrentlyPresent(string rootId)
+    {
+        if (rootId.StartsWith(RootGroupPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var groupedName = rootId[RootGroupPrefix.Length..];
+            foreach (var (actualRootId, displayName) in _rootDisplayNames)
+            {
+                if (!string.Equals(displayName.Trim(), groupedName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (IsRootCurrentlyPresent(actualRootId))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (_rootPresenceById.TryGetValue(rootId, out var present))
+        {
+            return present;
+        }
+
+        if (!_rootPathById.TryGetValue(rootId, out var rootPath))
+        {
+            return true;
+        }
+
+        present = Directory.Exists(rootPath);
+        _rootPresenceById[rootId] = present;
+        return present;
+    }
+
+    private bool IsClipCurrentlyPresent(ClipTimelineItem clip)
+    {
+        if (!IsRootCurrentlyPresent(clip.RootId))
+        {
+            return false;
+        }
+
+        var resolvedPath = ResolveClipPathForCurrentProject(clip.ClipPath);
+        if (_clipPresenceCache.TryGetValue(resolvedPath, out var cached))
+        {
+            return cached;
+        }
+
+        var exists = File.Exists(resolvedPath);
+        _clipPresenceCache[resolvedPath] = exists;
+        return exists;
+    }
+
+    private List<ClipTimelineItem> ApplyPresenceFilter(IEnumerable<ClipTimelineItem> timeline)
+    {
+        var list = HideMissingClips
+            ? timeline.Where(IsClipCurrentlyPresent).ToList()
+            : timeline.ToList();
+
+        ClipTimelineItem? previous = null;
+        foreach (var clip in list)
+        {
+            if (previous is null ||
+                clip.CreatedAtUtc == DateTimeOffset.MinValue ||
+                previous.CreatedAtUtc == DateTimeOffset.MinValue)
+            {
+                clip.DeltaFromPreviousSec = null;
+            }
+            else
+            {
+                clip.DeltaFromPreviousSec = (clip.CreatedAtUtc - previous.CreatedAtUtc).TotalSeconds;
+            }
+
+            previous = clip;
+        }
+
+        return list;
+    }
+
+    private string BuildQualifiedClipName(ClipTimelineItem clip)
+    {
+        var root = _rootDisplayNames.TryGetValue(clip.RootId, out var rootName) && !string.IsNullOrWhiteSpace(rootName)
+            ? rootName
+            : clip.RootId;
+        return $"{root}/{clip.Site}/{clip.Dcim}/{clip.Session}/{clip.ClipName}";
+    }
+
+    private string? ResolveBenchmarkClipPath()
+    {
+        if (!string.IsNullOrWhiteSpace(_selectedClip?.ClipPath))
+        {
+            var selected = ResolveClipPathForCurrentProject(_selectedClip.ClipPath);
+            if (File.Exists(selected))
+            {
+                return selected;
+            }
+        }
+
+        var timelineCandidate = _timelineAll.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.ClipPath))?.ClipPath;
+        if (!string.IsNullOrWhiteSpace(timelineCandidate))
+        {
+            var candidate = ResolveClipPathForCurrentProject(timelineCandidate);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        if (_repository is null)
+        {
+            return null;
+        }
+
+        foreach (var root in _repository.GetClipRoots())
+        {
+            var scope = new ScopeFilter(TreeNodeType.Root, root.RootId);
+            var rootClipPath = _repository.GetTimeline(scope)
+                .Select(x => x.ClipPath)
+                .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(ResolveClipPathForCurrentProject(path)));
+            if (!string.IsNullOrWhiteSpace(rootClipPath))
+            {
+                return ResolveClipPathForCurrentProject(rootClipPath);
+            }
+        }
+
+        return null;
     }
 
     private static string BuildScopeLabel(HierarchyNode node)
@@ -2298,20 +2887,84 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private static string FrameKey(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
 
-    private double GetDefaultOverlayThreshold(ClipTimelineItem clip)
+    private bool TryApplyMinVisibleConfidenceFromText(bool showError)
     {
-        if (!clip.Processed)
+        if (!TryParseConfidence(MinVisibleConfidenceText, out var parsed))
         {
-            return _config.Processing.ConfThreshold;
+            if (showError)
+            {
+                MessageBox.Show(this, "Minimum confidence must be a number greater than or equal to 0 and less than 1.", "ReefCams");
+            }
+
+            MinVisibleConfidenceText = FormatConfidence(MinVisibleConfidence);
+            return false;
         }
 
-        return clip.Rank switch
+        var normalized = NormalizeMinVisibleConfidence(parsed);
+        MinVisibleConfidence = normalized;
+        MinVisibleConfidenceText = FormatConfidence(normalized);
+        _config.Timeline.MinVisibleConfidence = normalized;
+        SaveConfig();
+        LoadHierarchy();
+        UpdateScopeSelectionSummary();
+        RebuildTimelineRows();
+        return true;
+    }
+
+    private void SaveConfig()
+    {
+        if (_projectPaths is null)
         {
-            RankBucket.VeryHigh => _config.RankThresholds.MediumInclusiveLower,
-            RankBucket.High => _config.RankThresholds.MediumInclusiveLower,
-            RankBucket.Medium => _config.RankThresholds.LowInclusiveLower,
-            _ => Ranker.LowerBound(clip.Rank, _config.RankThresholds)
-        };
+            return;
+        }
+
+        _configService.Save(_projectPaths, _config);
+    }
+
+    private static bool TryParseConfidence(string raw, out double value)
+    {
+        if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value) ||
+            double.TryParse(raw, NumberStyles.Float, CultureInfo.CurrentCulture, out value))
+        {
+            if (!double.IsNaN(value) && !double.IsInfinity(value) && value >= 0 && value < 1)
+            {
+                return true;
+            }
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private static double NormalizeMinVisibleConfidence(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return 0.4;
+        }
+
+        if (value < 0)
+        {
+            return 0;
+        }
+
+        if (value >= 1)
+        {
+            return 0.999999;
+        }
+
+        return value;
+    }
+
+    private static string FormatConfidence(double value)
+    {
+        return value.ToString("0.################", CultureInfo.InvariantCulture);
+    }
+
+    private double GetDefaultOverlayThreshold(ClipTimelineItem clip)
+    {
+        _ = clip;
+        return NormalizeMinVisibleConfidence(_config.Timeline.MinVisibleConfidence);
     }
 
     private static string FormatDelta(double seconds)

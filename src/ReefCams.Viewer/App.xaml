@@ -3,11 +3,13 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-        <SolidColorBrush x:Key="BackgroundBrush" Color="#11161D"/>
-        <SolidColorBrush x:Key="PanelBrush" Color="#1A2230"/>
-        <SolidColorBrush x:Key="AccentBrush" Color="#3AA0F5"/>
-        <SolidColorBrush x:Key="TextBrush" Color="#E7EEF7"/>
-        <SolidColorBrush x:Key="MutedTextBrush" Color="#9BB0C8"/>
+        <SolidColorBrush x:Key="BackgroundBrush" Color="#0D1117"/>
+        <SolidColorBrush x:Key="PanelBrush" Color="#1B2638"/>
+        <SolidColorBrush x:Key="PanelAltBrush" Color="#24354D"/>
+        <SolidColorBrush x:Key="AccentBrush" Color="#5FB8FF"/>
+        <SolidColorBrush x:Key="TextBrush" Color="#F5FAFF"/>
+        <SolidColorBrush x:Key="MutedTextBrush" Color="#C7D6E8"/>
+        <SolidColorBrush x:Key="SuccessBrush" Color="#3FBF7F"/>
         <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F5D8F"/>
         <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#2A4E77"/>
         <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF"/>
@@ -15,30 +17,67 @@
         <Style TargetType="Window">
             <Setter Property="Background" Value="{StaticResource BackgroundBrush}" />
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontFamily" Value="Segoe UI Semibold" />
         </Style>
         <Style TargetType="Button">
-            <Setter Property="Background" Value="#263347" />
+            <Setter Property="Background" Value="#365172" />
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="BorderBrush" Value="#3B4E69" />
+            <Setter Property="BorderBrush" Value="#76A6D8" />
             <Setter Property="Padding" Value="8,4" />
             <Setter Property="Margin" Value="4" />
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="#4B5565" />
+                    <Setter Property="BorderBrush" Value="#7C879A" />
+                    <Setter Property="Foreground" Value="#E6ECF4" />
+                    <Setter Property="Opacity" Value="1" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="DangerButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#C24A4A" />
+            <Setter Property="BorderBrush" Value="#F2A0A0" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="#6E5757" />
+                    <Setter Property="BorderBrush" Value="#9A8A8A" />
+                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Opacity" Value="1" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
         </Style>
         <Style TargetType="TextBox">
-            <Setter Property="Background" Value="#202C3D" />
+            <Setter Property="Background" Value="#2D3D56" />
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="BorderBrush" Value="#3B4E69" />
+            <Setter Property="BorderBrush" Value="#7AA6D6" />
             <Setter Property="Padding" Value="6,4" />
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#F1F5FB" />
             <Setter Property="Foreground" Value="#0F1726" />
             <Setter Property="TextElement.Foreground" Value="#0F1726" />
-            <Setter Property="BorderBrush" Value="#3B4E69" />
+            <Setter Property="BorderBrush" Value="#7AA6D6" />
+            <Setter Property="Padding" Value="4,2" />
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="#CDD7E5" />
+                    <Setter Property="Foreground" Value="#2B3546" />
+                    <Setter Property="TextElement.Foreground" Value="#2B3546" />
+                    <Setter Property="Opacity" Value="1" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="ComboBoxItem">
             <Setter Property="Background" Value="#F1F5FB" />
             <Setter Property="Foreground" Value="#0F1726" />
+            <Setter Property="Padding" Value="6,2" />
             <Style.Triggers>
                 <Trigger Property="IsHighlighted" Value="True">
                     <Setter Property="Background" Value="#3F6EA2" />
@@ -50,10 +89,16 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+        <Style TargetType="ProgressBar">
+            <Setter Property="Foreground" Value="#58B0FF" />
+            <Setter Property="Background" Value="#2D3D56" />
+            <Setter Property="BorderBrush" Value="#7AA6D6" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
         <Style TargetType="TreeView">
-            <Setter Property="Background" Value="#1A2230" />
+            <Setter Property="Background" Value="#1B2638" />
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="BorderBrush" Value="#3B4E69" />
+            <Setter Property="BorderBrush" Value="#7AA6D6" />
         </Style>
         <Style TargetType="TreeViewItem">
             <Setter Property="Background" Value="Transparent" />
@@ -73,12 +118,21 @@
             </Style.Triggers>
         </Style>
         <Style TargetType="DataGrid">
-            <Setter Property="Background" Value="#151E2A" />
+            <Setter Property="Background" Value="#1B2638" />
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="BorderBrush" Value="#2A3A50" />
-            <Setter Property="RowBackground" Value="#1A2230" />
-            <Setter Property="AlternatingRowBackground" Value="#202A3A" />
+            <Setter Property="BorderBrush" Value="#7AA6D6" />
+            <Setter Property="RowBackground" Value="#213049" />
+            <Setter Property="AlternatingRowBackground" Value="#283A56" />
             <Setter Property="GridLinesVisibility" Value="Horizontal" />
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#365172" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="#7AA6D6" />
+        </Style>
+        <Style TargetType="DataGridCell">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="#4A678C" />
         </Style>
     </Application.Resources>
 </Application>

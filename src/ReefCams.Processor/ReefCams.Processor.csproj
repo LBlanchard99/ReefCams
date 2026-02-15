@@ -8,10 +8,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>ReefCams.Processor</AssemblyName>
     <RootNamespace>ReefCams.Processor</RootNamespace>
+    <ApplicationIcon>..\..\ProcessorLogo.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\ReefCams.Core\ReefCams.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="..\..\ProcessorLogo.png" Link="Assets\ProcessorLogo.png" />
   </ItemGroup>
 
   <ItemGroup>

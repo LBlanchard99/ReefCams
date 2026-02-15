@@ -7,6 +7,7 @@
         xmlns:core="clr-namespace:ReefCams.Core;assembly=ReefCams.Core"
         mc:Ignorable="d"
         Title="ReefCams Processor"
+        Icon="Assets/ProcessorLogo.png"
         Width="1560"
         Height="920"
         MinWidth="1280"
@@ -22,6 +23,9 @@
             <Setter Property="Foreground" Value="#FFFFFF" />
             <Setter Property="BorderBrush" Value="#9CC2EB" />
             <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="10,1" />
+            <Setter Property="MinHeight" Value="22" />
+            <Setter Property="VerticalAlignment" Value="Center" />
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="#3F6EA2" />
@@ -107,52 +111,61 @@
                             </Button.ContextMenu>
                         </Button>
                     </StackPanel>
+                    <StackPanel DockPanel.Dock="Right"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center"
+                                Margin="10,0,0,0">
+                        <TextBlock Margin="0,0,4,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="#D4E5FA"
+                                   Text="Progress:" />
+                        <ProgressBar x:Name="ProcessingProgressBar"
+                                     Width="130"
+                                     Height="12"
+                                     VerticalAlignment="Center"
+                                     Minimum="0"
+                                     Maximum="1"
+                                     Value="0"
+                                     IsIndeterminate="{Binding IsProgressIndeterminate}"
+                                     ToolTip="Progress of the current operation (index/process/benchmark/export)" />
+                        <TextBlock Margin="6,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Text="{Binding OperationProgressText}"
+                                   Foreground="#F5FAFF" />
+                    </StackPanel>
                     <TextBlock Text="{Binding ProjectDirDisplay}" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="#D4E5FA" />
                 </DockPanel>
                 <DockPanel x:Name="FilterRow" Margin="0,8,0,0" LastChildFill="True">
-                    <ComboBox Width="220"
-                              ItemsSource="{Binding RankOptions}"
-                              SelectedItem="{Binding SelectedMinRank, Mode=TwoWay}"
-                              SelectionChanged="MinRank_SelectionChanged"
-                              Foreground="#0F1726"
-                              Background="#F1F5FB"
-                              BorderBrush="#9BC7F5">
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding}" Foreground="#0F1726" />
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                        <ComboBox.Resources>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="Foreground" Value="#0F1726" />
-                            </Style>
-                            <Style TargetType="ComboBoxItem">
-                                <Setter Property="Foreground" Value="#0F1726" />
-                                <Setter Property="Background" Value="#F1F5FB" />
-                            </Style>
-                        </ComboBox.Resources>
-                    </ComboBox>
+                    <TextBlock Text="Min confidence"
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0" />
+                    <TextBox x:Name="MinVisibleConfidenceTextBox"
+                             Width="88"
+                             Text="{Binding MinVisibleConfidenceText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             VerticalContentAlignment="Center"
+                             Foreground="#0F1726"
+                             Background="#F1F5FB"
+                             BorderBrush="#9BC7F5"
+                             LostFocus="MinVisibleConfidenceTextBox_LostFocus"
+                             KeyDown="MinVisibleConfidenceTextBox_KeyDown" />
                     <CheckBox Margin="12,0,0,0"
                               VerticalAlignment="Center"
-                              IsChecked="{Binding HideBelowRank, Mode=TwoWay}"
-                              Checked="HideBelowRank_Changed"
-                              Unchecked="HideBelowRank_Changed"
-                              Content="Hide clips below selected rank" />
-                    <TextBlock Margin="12,0,4,0" VerticalAlignment="Center" Text="Operation progress:" />
-                    <ProgressBar x:Name="ProcessingProgressBar"
-                                 Width="180"
-                                 Margin="12,0,0,0"
-                                 Height="16"
-                                 VerticalAlignment="Center"
-                                  Minimum="0"
-                                 Maximum="1"
-                                 Value="0"
-                                 IsIndeterminate="{Binding IsProgressIndeterminate}"
-                                 ToolTip="Progress of the current operation (index/process/benchmark/export)" />
-                    <TextBlock Margin="8,0,0,0"
-                               VerticalAlignment="Center"
-                               Text="{Binding OperationProgressText}"
-                               Foreground="#F5FAFF" />
+                              IsChecked="{Binding HideBelowConfidence, Mode=TwoWay}"
+                              Checked="HideBelowConfidence_Changed"
+                              Unchecked="HideBelowConfidence_Changed"
+                              Content="Hide clips below confidence" />
+                    <CheckBox Margin="10,0,0,0"
+                              VerticalAlignment="Center"
+                              IsChecked="{Binding HideCompletedClips, Mode=TwoWay}"
+                              Checked="HideCompletedClips_Changed"
+                              Unchecked="HideCompletedClips_Changed"
+                              Content="Hide completed clips" />
+                    <CheckBox Margin="10,0,0,0"
+                              VerticalAlignment="Center"
+                              IsChecked="{Binding HideMissingClips, Mode=TwoWay}"
+                              Checked="HideMissingClips_Changed"
+                              Unchecked="HideMissingClips_Changed"
+                              Content="Hide missing clips" />
                     <StackPanel Orientation="Horizontal"
                                 VerticalAlignment="Center"
                                 HorizontalAlignment="Right"
@@ -161,7 +174,7 @@
                                    FontWeight="Bold"
                                    Foreground="#F5FAFF"
                                    TextTrimming="CharacterEllipsis"
-                                   MaxWidth="220" />
+                                   MaxWidth="420" />
                         <TextBlock Text="{Binding SelectedClipInfoText}"
                                    Margin="6,0,0,0"
                                    Foreground="#D4E5FA"
@@ -206,7 +219,7 @@
 
         <Grid Grid.Row="1" Margin="0,10,0,0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition x:Name="SidebarColumnDef" Width="460" MinWidth="300" />
+                <ColumnDefinition x:Name="SidebarColumnDef" Width="720" MinWidth="360" />
                 <ColumnDefinition Width="6" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
@@ -245,39 +258,135 @@
                                   AutoGenerateColumns="False"
                                   CanUserAddRows="False"
                                   IsReadOnly="True"
+                                  CanUserSortColumns="False"
                                   SelectionMode="Single"
                                   SelectionUnit="FullRow"
+                                  RowDetailsVisibilityMode="Visible"
+                                  GridLinesVisibility="Vertical"
+                                  VerticalGridLinesBrush="#5F7EA5"
                                   EnableRowVirtualization="True"
                                   EnableColumnVirtualization="True"
                                   SelectionChanged="TimelineDataGrid_SelectionChanged">
+                            <DataGrid.CellStyle>
+                                <Style TargetType="DataGridCell">
+                                    <Setter Property="Padding" Value="10,0" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsGapRow}" Value="True">
+                                            <Setter Property="BorderThickness" Value="0" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGrid.CellStyle>
+                            <DataGrid.RowDetailsTemplate>
+                                <DataTemplate>
+                                    <Border Background="#2B2D39"
+                                            BorderBrush="#3B4B66"
+                                            BorderThickness="0,0,0,1"
+                                            Padding="8,2">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsGapRow}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <DockPanel LastChildFill="True">
+                                            <Button DockPanel.Dock="Left"
+                                                    Content="Expand"
+                                                    Tag="{Binding GapGroupId}"
+                                                    Click="ExpandGap_Click"
+                                                    Style="{StaticResource GapExpandButtonStyle}" />
+                                            <TextBlock Text="{Binding GapSummary}"
+                                                       Margin="10,0,0,0"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="#CFD9EA" />
+                                        </DockPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </DataGrid.RowDetailsTemplate>
                             <DataGrid.Columns>
-                                <DataGridTemplateColumn Header="Expand" Width="72">
+                                <DataGridTemplateColumn x:Name="ClipColumn" Header="Clip" Width="SizeToCells" MinWidth="90">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <Button Content="Expand"
-                                                    Tag="{Binding GapGroupId}"
-                                                    Click="ExpandGap_Click">
-                                                <Button.Style>
-                                                    <Style TargetType="Button" BasedOn="{StaticResource GapExpandButtonStyle}">
-                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                            <TextBlock Text="{Binding ClipName}" VerticalAlignment="Center">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Visible" />
                                                         <Style.Triggers>
                                                             <DataTrigger Binding="{Binding IsGapRow}" Value="True">
-                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                <Setter Property="Visibility" Value="Collapsed" />
                                                             </DataTrigger>
                                                         </Style.Triggers>
                                                     </Style>
-                                                </Button.Style>
-                                            </Button>
+                                                </TextBlock.Style>
+                                            </TextBlock>
                                         </DataTemplate>
                                     </DataGridTemplateColumn.CellTemplate>
                                 </DataGridTemplateColumn>
-                                <DataGridTextColumn Header="Clip / Gap Summary" Binding="{Binding ClipName}" Width="*" />
-                                <DataGridTextColumn Header="Timestamp (UTC)" Binding="{Binding CreatedText}" Width="180" />
-                                <DataGridTextColumn Header="Rank" Binding="{Binding RankLabel}" Width="88" />
-                                <DataGridTextColumn Header="Max Conf" Binding="{Binding MaxConfText}" Width="80" />
-                                <DataGridCheckBoxColumn Header="Processed" Binding="{Binding Processed}" Width="78" />
-                                <DataGridCheckBoxColumn Header="Completed" Binding="{Binding Completed}" Width="78" />
-                                <DataGridTextColumn Header="Delta t" Binding="{Binding DeltaText}" Width="120" />
+                                <DataGridTextColumn x:Name="TimestampColumn" Header="Timestamp (UTC)" Binding="{Binding CreatedText}" Width="SizeToCells">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsGapRow}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn x:Name="ConfColumn" Header="Conf" Binding="{Binding MaxConfText}" Width="SizeToCells">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsGapRow}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn x:Name="DeltaColumn" Header="Delta t" Binding="{Binding DeltaText}" Width="SizeToCells">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsGapRow}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridCheckBoxColumn Header="P" Binding="{Binding Processed}" Width="34">
+                                    <DataGridCheckBoxColumn.ElementStyle>
+                                        <Style TargetType="CheckBox">
+                                            <Setter Property="HorizontalAlignment" Value="Center" />
+                                            <Setter Property="IsHitTestVisible" Value="False" />
+                                            <Setter Property="Focusable" Value="False" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsGapRow}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGridCheckBoxColumn.ElementStyle>
+                                </DataGridCheckBoxColumn>
+                                <DataGridCheckBoxColumn Header="C" Binding="{Binding Completed}" Width="34">
+                                    <DataGridCheckBoxColumn.ElementStyle>
+                                        <Style TargetType="CheckBox">
+                                            <Setter Property="HorizontalAlignment" Value="Center" />
+                                            <Setter Property="IsHitTestVisible" Value="False" />
+                                            <Setter Property="Focusable" Value="False" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsGapRow}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGridCheckBoxColumn.ElementStyle>
+                                </DataGridCheckBoxColumn>
                             </DataGrid.Columns>
                         </DataGrid>
                     </DockPanel>
@@ -329,13 +438,13 @@
                         <Button x:Name="MarkClipCompletedButton" Content="Mark Clip Completed" Click="MarkClipCompleted_Click" />
                         <CheckBox x:Name="ShowDetectionsCheck"
                                   Content="Detections"
-                                  IsChecked="True"
+                                  IsChecked="False"
                                   Checked="OverlaySettings_Changed"
                                   Unchecked="OverlaySettings_Changed"
                                   Margin="12,2,0,0" />
                         <CheckBox x:Name="ShowBoundaryCheck"
                                   Content="Boundary"
-                                  IsChecked="True"
+                                  IsChecked="False"
                                   Checked="OverlaySettings_Changed"
                                   Unchecked="OverlaySettings_Changed"
                                   Margin="12,2,0,0" />
@@ -345,13 +454,7 @@
                                 Width="120"
                                 ValueChanged="OverlaySettings_Changed"
                                 Value="0.1" />
-                        <TextBlock Text="Padding px" Margin="16,0,4,0" VerticalAlignment="Center" />
-                        <Slider x:Name="PaddingSlider"
-                                Minimum="0"
-                                Maximum="120"
-                                Width="120"
-                                ValueChanged="OverlaySettings_Changed"
-                                Value="10" />
+                        <TextBlock Text="{Binding OverlayConfidenceText}" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#D4E5FA" />
                     </WrapPanel>
                 </Grid>
             </Border>

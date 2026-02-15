@@ -36,19 +36,17 @@ public sealed record ProjectPaths(
 
 public sealed class AppConfig
 {
-    public RankThresholds RankThresholds { get; set; } = RankThresholds.CreateDefault();
+    public TimelineSettings Timeline { get; set; } = TimelineSettings.CreateDefault();
     public ProcessingSettings Processing { get; set; } = ProcessingSettings.CreateDefault();
 }
 
-public sealed class RankThresholds
+public sealed class TimelineSettings
 {
-    public double VeryHighExclusiveLower { get; set; } = 0.9;
-    public double HighInclusiveLower { get; set; } = 0.6;
-    public double MediumInclusiveLower { get; set; } = 0.45;
-    public double LowInclusiveLower { get; set; } = 0.1;
-    public double VeryLowInclusiveLower { get; set; } = 0.01;
+    public double MinVisibleConfidence { get; set; } = 0.4;
+    public bool HideCompletedClips { get; set; } = true;
+    public bool HideMissingClips { get; set; } = true;
 
-    public static RankThresholds CreateDefault() => new();
+    public static TimelineSettings CreateDefault() => new();
 }
 
 public sealed class ProcessingSettings
@@ -75,20 +73,32 @@ public sealed class ConfigService
         paths.EnsureExists();
         if (!File.Exists(paths.ConfigPath))
         {
-            var config = new AppConfig();
-            Save(paths, config);
-            return config;
+            var createdConfig = new AppConfig();
+            Save(paths, createdConfig);
+            return createdConfig;
         }
 
         var json = File.ReadAllText(paths.ConfigPath);
         if (string.IsNullOrWhiteSpace(json))
         {
-            var config = new AppConfig();
-            Save(paths, config);
-            return config;
+            var createdConfig = new AppConfig();
+            Save(paths, createdConfig);
+            return createdConfig;
         }
 
-        return JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
+        var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
+        config.Timeline ??= TimelineSettings.CreateDefault();
+        config.Processing ??= ProcessingSettings.CreateDefault();
+
+        if (double.IsNaN(config.Timeline.MinVisibleConfidence) ||
+            double.IsInfinity(config.Timeline.MinVisibleConfidence) ||
+            config.Timeline.MinVisibleConfidence < 0 ||
+            config.Timeline.MinVisibleConfidence >= 1)
+        {
+            config.Timeline.MinVisibleConfidence = 0.4;
+        }
+
+        return config;
     }
 
     public void Save(ProjectPaths paths, AppConfig config)

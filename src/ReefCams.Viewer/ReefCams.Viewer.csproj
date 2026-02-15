@@ -8,6 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>ReefCams.Viewer</AssemblyName>
     <RootNamespace>ReefCams.Viewer</RootNamespace>
+    <ApplicationIcon>..\..\ViewerLogo.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,6 +16,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\engine_dist\engine\ffprobe.exe" CopyToOutputDirectory="PreserveNewest" Link="ffprobe.exe" Condition="Exists('..\..\engine_dist\engine\ffprobe.exe')" />
+    <Resource Include="..\..\ViewerLogo.png" Link="Assets\ViewerLogo.png" />
   </ItemGroup>
 </Project>

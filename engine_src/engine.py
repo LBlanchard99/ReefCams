@@ -63,6 +63,10 @@ def try_extract_bar_metadata(clip_path: Path, args: argparse.Namespace) -> tuple
         return False, (time.perf_counter() - t0) * 1000.0, None
 
 
+def should_extract_bar_metadata(args: argparse.Namespace) -> bool:
+    return not bool(getattr(args, "disable_bar_metadata", False))
+
+
 def process_clip(args: argparse.Namespace) -> int:
     t0 = time.perf_counter()
     clip_path = Path(args.clip)
@@ -121,18 +125,22 @@ def process_clip(args: argparse.Namespace) -> int:
         width=meta["width"],
         height=meta["height"],
     )
-    # Extract bottom-bar metadata (best effort).
-    bar_ok, bar_ms, bar = try_extract_bar_metadata(clip_path, args)
-    if bar_ok and bar is not None:
-        db.update_clip_bar_metadata(
-            conn,
-            clip_id=clip_id,
-            site=bar.site,
-            temp_f=int(bar.temp_f),
-            temp_c=int(bar.temp_c),
-            bar_date=bar.date,
-            bar_time=bar.time,
-        )
+    bar_ok = False
+    bar_ms = 0.0
+    bar = None
+    if should_extract_bar_metadata(args):
+        # Extract bottom-bar metadata (best effort).
+        bar_ok, bar_ms, bar = try_extract_bar_metadata(clip_path, args)
+        if bar_ok and bar is not None:
+            db.update_clip_bar_metadata(
+                conn,
+                clip_id=clip_id,
+                site=bar.site,
+                temp_f=int(bar.temp_f),
+                temp_c=int(bar.temp_c),
+                bar_date=bar.date,
+                bar_time=bar.time,
+            )
 
     detector = md.MegaDetector(model_path, providers=provider_list)
     provider_used = detector.provider_used[0] if detector.provider_used else ""
@@ -266,7 +274,10 @@ def run_benchmark(args: argparse.Namespace) -> int:
     )
     provider_used = detector.provider_used[0] if detector.provider_used else ""
 
-    meta_ok, meta_ms, _ = try_extract_bar_metadata(clip_path, args)
+    if should_extract_bar_metadata(args):
+        meta_ok, meta_ms, _ = try_extract_bar_metadata(clip_path, args)
+    else:
+        meta_ok, meta_ms = False, 0.0
 
     if args.warmup:
         emit(
@@ -408,6 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_process.add_argument("--model")
     p_process.add_argument("--provider")
     p_process.add_argument("--force", action="store_true")
+    p_process.add_argument("--disable-bar-metadata", action="store_true", help="Skip reef_bar_metadata extraction.")
     p_process.add_argument("--meta-calibration-clip", default=None, help="Optional calibration clip for OCR templates.")
     p_process.add_argument("--meta-calibration-site", default="F32")
     p_process.add_argument("--meta-calibration-temp-f", default="82F")
@@ -423,6 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--db")
     p_bench.add_argument("--warmup", action="store_true", help="Run a single warmup inference before timing.")
     p_bench.add_argument("--summary", action="store_true", help="Print a human-readable summary after benchmark.")
+    p_bench.add_argument("--disable-bar-metadata", action="store_true", help="Skip reef_bar_metadata extraction.")
     p_bench.add_argument("--meta-calibration-clip", default=None, help="Optional calibration clip for OCR templates.")
     p_bench.add_argument("--meta-calibration-site", default="F32")
     p_bench.add_argument("--meta-calibration-temp-f", default="82F")
@@ -448,6 +461,7 @@ def main() -> int:
             warmup=True,
             summary=True,
             pause_on_exit=True,
+            disable_bar_metadata=False,
             meta_calibration_clip=None,
             meta_calibration_site="F32",
             meta_calibration_temp_f="82F",
