@@ -20,6 +20,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\engine_dist\engine\**\*" CopyToOutputDirectory="PreserveNewest" LinkBase="engine" Condition="Exists('..\..\engine_dist\engine')" />
+    <None Include="..\..\engine_dist\engine\**\*" CopyToOutputDirectory="PreserveNewest" LinkBase="engine" ExcludeFromSingleFile="true" Condition="Exists('..\..\engine_dist\engine')" />
   </ItemGroup>
 </Project>

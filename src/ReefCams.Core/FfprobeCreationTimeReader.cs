@@ -159,6 +159,7 @@ internal sealed class FfprobeCreationTimeReader
         var parent = new DirectoryInfo(baseDir);
         for (var i = 0; i < 8 && parent is not null; i++)
         {
+            candidates.Add(Path.Combine(parent.FullName, "engine", "ffprobe.exe"));
             candidates.Add(Path.Combine(parent.FullName, "engine_dist", "engine", "ffprobe.exe"));
             candidates.Add(Path.Combine(parent.FullName, "engine_src", "ffprobe.exe"));
             parent = parent.Parent;

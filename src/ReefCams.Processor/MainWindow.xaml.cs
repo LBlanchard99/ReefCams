@@ -405,7 +405,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var enginePath = ResolveEnginePath();
         if (enginePath is null)
         {
-            MessageBox.Show(this, "engine.exe was not found under engine\\engine.exe next to ReefCams.Processor.exe.", "ReefCams");
+            MessageBox.Show(this, "engine.exe was not found under _internal\\engine\\engine.exe in the Processor package.", "ReefCams");
             return;
         }
 
@@ -538,7 +538,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var enginePath = ResolveEnginePath();
         if (enginePath is null)
         {
-            MessageBox.Show(this, "engine.exe was not found under engine\\engine.exe next to ReefCams.Processor.exe.", "ReefCams");
+            MessageBox.Show(this, "engine.exe was not found under _internal\\engine\\engine.exe in the Processor package.", "ReefCams");
             return;
         }
 
@@ -2066,10 +2066,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private string? ResolveEnginePath()
     {
-        var bundled = Path.Combine(AppContext.BaseDirectory, "engine", "engine.exe");
-        if (File.Exists(bundled))
+        var internalBundled = Path.Combine(AppContext.BaseDirectory, "engine", "engine.exe");
+        if (File.Exists(internalBundled))
         {
-            return bundled;
+            return internalBundled;
+        }
+
+        var appRoot = GetAppRootDirectory();
+        var legacyBundled = Path.Combine(appRoot, "engine", "engine.exe");
+        if (File.Exists(legacyBundled))
+        {
+            return legacyBundled;
         }
 
         var fallback = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "engine_dist", "engine", "engine.exe"));
@@ -2078,16 +2085,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private string? ResolveViewerDistributionDirectory()
     {
-        var bundledViewerFolder = Path.Combine(AppContext.BaseDirectory, "viewer");
-        if (Directory.Exists(bundledViewerFolder))
+        var internalBundledViewerFolder = Path.Combine(AppContext.BaseDirectory, "viewer");
+        if (Directory.Exists(internalBundledViewerFolder))
         {
-            return bundledViewerFolder;
+            return internalBundledViewerFolder;
         }
 
-        var sameFolderViewerExe = Path.Combine(AppContext.BaseDirectory, "ReefCams.Viewer.exe");
+        var appRoot = GetAppRootDirectory();
+        var legacyBundledViewerFolder = Path.Combine(appRoot, "viewer");
+        if (Directory.Exists(legacyBundledViewerFolder))
+        {
+            return legacyBundledViewerFolder;
+        }
+
+        var sameFolderViewerExe = Path.Combine(appRoot, "ReefCams.Viewer.exe");
         if (File.Exists(sameFolderViewerExe))
         {
-            return AppContext.BaseDirectory;
+            return appRoot;
         }
 
         return null;
@@ -2117,7 +2131,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private static string GetUiStatePath() => Path.Combine(AppContext.BaseDirectory, "processor_ui_state.json");
+    private static string GetUiStatePath() => Path.Combine(GetAppRootDirectory(), "processor_ui_state.json");
+
+    private static string GetAppRootDirectory()
+    {
+        var baseDir = Path.GetFullPath(AppContext.BaseDirectory);
+        var trimmed = baseDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var folderName = Path.GetFileName(trimmed);
+        if (string.Equals(folderName, "_internal", StringComparison.OrdinalIgnoreCase))
+        {
+            var parent = Directory.GetParent(trimmed);
+            if (parent is not null)
+            {
+                return parent.FullName;
+            }
+        }
+
+        return baseDir;
+    }
 
     private ProcessorUiState? LoadUiState()
     {
